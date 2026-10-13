@@ -1,0 +1,66 @@
+{
+  "name": "astro-sushil-backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node src/server.js",
+    "dev": "nodemon",
+    "seed:report-faqs": "node src/scripts/seedReportFaqs.js",
+    "seed:rbac": "node src/scripts/seedRbac.js",
+    "migrate:media-podcast": "node src/scripts/migrateTestimonialToPodcast.js",
+    "backfill:manual-booking-transactions": "node src/scripts/backfillManualBookingTransactions.js",
+    "fix:legacy-transaction-gaps": "node src/scripts/fixLegacyTransactionGaps.js",
+    "diagnose:gst-dashboard-gap": "node src/scripts/diagnoseGstDashboardGap.js",
+    "diagnose:gst-extras": "node src/scripts/diagnoseGstExtras.js",
+    "resend:match-making-reports": "node src/scripts/resendMatchMakingReportNotifications.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Wishgeeks/astro-sushil-backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/Wishgeeks/astro-sushil-backend/issues"
+  },
+  "homepage": "https://github.com/Wishgeeks/astro-sushil-backend#readme",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1026.0",
+    "@aws-sdk/client-ses": "^3.1026.0",
+    "axios": "^1.16.1",
+    "bcrypt": "^6.0.0",
+    "bullmq": "^5.76.7",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dayjs": "^1.11.20",
+    "dotenv": "^17.4.1",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.3.2",
+    "helmet": "^8.1.0",
+    "ioredis": "^5.10.1",
+    "jsonwebtoken": "^9.0.3",
+    "lodash": "^4.18.1",
+    "mongoose": "^9.4.1",
+    "morgan": "^1.10.1",
+    "multer": "^2.1.1",
+    "multer-s3": "^3.0.1",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^8.0.5",
+    "pdf-lib": "^1.17.1",
+    "pdfkit": "^0.18.0",
+    "puppeteer": "^24.42.0",
+    "puppeteer-core": "^24.42.0",
+    "razorpay": "^2.9.6",
+    "sharp": "^0.34.5",
+    "slugify": "^1.6.9",
+    "winston": "^3.19.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

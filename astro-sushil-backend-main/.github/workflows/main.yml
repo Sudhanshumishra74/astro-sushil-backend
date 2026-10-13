@@ -1,0 +1,107 @@
+name: Astro Sushil Backend Deployment
+
+on:
+  push:
+    branches: [prod]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install rsync
+        run: sudo apt-get update && sudo apt-get install -y rsync
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Ensure deployment directory exists
+        run: |
+          ssh -i ~/.ssh/id_rsa "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+            "mkdir -p ~/astro-sushil/backend"
+
+      - name: Sync project files to VPS
+        run: |
+          rsync -az --delete \
+            --exclude ".git" \
+            --exclude ".github" \
+            --exclude "node_modules" \
+            -e "ssh -i ~/.ssh/id_rsa" \
+            ./ "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:~/astro-sushil/backend/"
+
+      - name: Deploy on VPS
+        run: |
+          ssh -i ~/.ssh/id_rsa "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" << 'EOF'
+            set -e
+
+            cd ~/astro-sushil/backend
+
+            echo "Build Docker image"
+            docker build -t backend-temp .
+
+            echo "Clean up previous health check container"
+            docker stop backend-temp-test || true
+            docker rm -f backend-temp-test || true
+
+            echo "Run temporary container for health check"
+            docker run -d --rm --name backend-temp-test -p 127.0.0.1:4001:3000 --env-file /var/env/astro-sushil/backend.env backend-temp
+
+            echo "Wait for container to be healthy"
+            STATUS=""
+            for i in {1..10}; do
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:4001/health || true)
+              if [ "$STATUS" = "200" ]; then
+                break
+              fi
+              sleep 3
+            done
+
+            if [ "$STATUS" != "200" ]; then
+              echo "Health check failed"
+              docker stop backend-temp-test || true
+              docker logs backend-temp-test || true
+              exit 1
+            fi
+
+            echo "Stop health check container"
+            docker stop backend-temp-test || true
+            docker rm -f backend-temp-test || true
+
+            echo "Stop and remove old backend container"
+            docker stop backend || true
+            docker rm -f backend || true
+
+            echo "Deploy new backend container"
+            docker image rm backend:latest || true
+            docker tag backend-temp backend:latest
+            docker run -d --restart always --name backend -p 127.0.0.1:4000:3000 --network shared-network --env-file /var/env/astro-sushil/backend.env backend:latest
+
+            echo "=============================="
+            echo " Checking Browserless Chromium"
+            echo "=============================="
+
+            if [ -z "$(docker ps -q -f name=browserless)" ]; then
+              echo "Browserless is NOT running. Starting now..."
+              docker run -d --restart always \
+                --name browserless \
+                --memory="2g" \
+                --memory-swap="7g" \
+                --network shared-network \
+                ghcr.io/browserless/chromium
+            else
+              echo "Browserless container is already running."
+            fi
+
+            echo "Clean up unused Docker resources"
+            docker image prune -f
+            docker system prune -f
+            docker volume prune -f
+            docker builder prune -f --filter "until=168h"
+          EOF
