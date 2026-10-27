@@ -14,39 +14,9 @@ import { notificationQueue } from "../queues/notification.queue.js";
 import { reduceStock } from "../modules/Order/order.controller.js";
 import { createDownloadsFromOrder } from "../modules/Download/download.controller.js";
 import { generateReportAfterPayment } from "../modules/Reports/report.controller.js";
+import { claimOrderPaymentWithInvoice } from "../service/orderPaymentService.js";
 
 // ─── Order helpers ────────────────────────────────────────────────────────────
-
-async function claimOrderPayment({
-  transactionId,
-  orderId,
-  razorpayPaymentId,
-  razorpayOrderId,
-  session,
-}) {
-  const order = await Order.findOneAndUpdate(
-    { _id: orderId, "payment.status": { $ne: "paid" } },
-    {
-      $set: {
-        "payment.status": "paid",
-        "payment.transactionId": razorpayPaymentId,
-        "payment.razorpayOrderId": razorpayOrderId,
-        orderStatus: "placed",
-      },
-    },
-    { new: true, session },
-  );
-
-  if (!order) return null; // Already claimed by client verify
-
-  await Transaction.findByIdAndUpdate(
-    transactionId,
-    { $set: { status: "success", transactionId: razorpayPaymentId } },
-    { session },
-  );
-
-  return order;
-}
 
 async function afterOrderClaim(order) {
   try {
@@ -304,10 +274,17 @@ export async function razorpayWebhook(req, res) {
 
   const session = await mongoose.startSession();
   session.startTransaction();
+  let sessionEnded = false;
+  const endSessionOnce = async () => {
+    if (!sessionEnded) {
+      sessionEnded = true;
+      await session.endSession();
+    }
+  };
 
   try {
     if (transaction.transactionType === "order") {
-      const claimed = await claimOrderPayment({
+      const claimResult = await claimOrderPaymentWithInvoice({
         transactionId: transaction._id,
         orderId: transaction.order,
         razorpayPaymentId,
@@ -316,15 +293,17 @@ export async function razorpayWebhook(req, res) {
       });
 
       await session.commitTransaction();
-      session.endSession();
+      await endSessionOnce();
 
-      if (!claimed) {
+      if (!claimResult.claimed) {
         console.info(
           { razorpayOrderId },
           "Webhook: order already claimed by client",
         );
         return res.status(200).json({ received: true });
       }
+
+      const claimed = claimResult.order;
 
       console.info(
         { orderId: claimed._id, razorpayPaymentId },
@@ -418,8 +397,23 @@ export async function razorpayWebhook(req, res) {
     );
     return res.status(200).json({ received: true });
   } catch (err) {
-    await session.abortTransaction();
-    session.endSession();
+    try {
+      await session.abortTransaction();
+    } catch (abortError) {
+      console.error(
+        { razorpayOrderId, err: abortError },
+        "Webhook: transaction abort failed",
+      );
+    } finally {
+      try {
+        await endSessionOnce();
+      } catch (endError) {
+        console.error(
+          { razorpayOrderId, err: endError },
+          "Webhook: session cleanup failed",
+        );
+      }
+    }
 
     console.error(
       { err, razorpayOrderId },

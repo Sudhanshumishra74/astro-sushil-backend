@@ -20,6 +20,8 @@ import { calculateCart } from "../../common/priceengine.js";
 import { Coupon } from "../coupon/coupon.model.js";
 import { User } from "../auth/user.modal.js";
 import { createRazorpayOrder } from "../../utils/razorpay.js";
+import { claimOrderPaymentWithInvoice } from "../../service/orderPaymentService.js";
+import { findInvoiceForPdf } from "../../service/invoicePdfService.js";
 
 export const reduceStock = async (order, session = null) => {
   for (const item of order.items) {
@@ -418,45 +420,48 @@ export const verifyPayment = asyncHandler(async (req, res) => {
 
   const session = await mongoose.startSession();
   session.startTransaction();
+  let sessionEnded = false;
+  const endSessionOnce = async () => {
+    if (!sessionEnded) {
+      sessionEnded = true;
+      await session.endSession();
+    }
+  };
 
-  let claimedOrder = null;
+  let claimResult;
 
   try {
-    // Atomic claim — only one of client or webhook wins; the other gets null
-    claimedOrder = await Order.findOneAndUpdate(
-      { _id: orderId, "payment.status": { $ne: "paid" } },
-      {
-        $set: {
-          "payment.status": "paid",
-          "payment.transactionId": razorpay_payment_id,
-          "payment.razorpayOrderId": razorpay_order_id,
-          orderStatus: "placed",
-        },
-      },
-      { new: true, session },
-    );
-
-    await Transaction.findOneAndUpdate(
-      { order: orderId },
-      {
-        $set: {
-          status: "success",
-          transactionId: razorpay_payment_id,
-          razorpayOrderId: razorpay_order_id,
-        },
-      },
-      { session },
-    );
+    claimResult = await claimOrderPaymentWithInvoice({
+      orderId,
+      razorpayPaymentId: razorpay_payment_id,
+      razorpayOrderId: razorpay_order_id,
+      session,
+    });
 
     await session.commitTransaction();
-    session.endSession();
+    await endSessionOnce();
   } catch (err) {
-    await session.abortTransaction();
-    session.endSession();
+    try {
+      await session.abortTransaction();
+    } catch (abortError) {
+      console.error(
+        { orderId, err: abortError },
+        "verifyPayment: transaction abort failed",
+      );
+    } finally {
+      try {
+        await endSessionOnce();
+      } catch (endError) {
+        console.error(
+          { orderId, err: endError },
+          "verifyPayment: session cleanup failed",
+        );
+      }
+    }
     throw err;
   }
 
-  if (!claimedOrder) {
+  if (!claimResult.claimed) {
     // Webhook already processed this payment — return success without re-running side effects
     console.info(
       { orderId },
@@ -467,6 +472,8 @@ export const verifyPayment = asyncHandler(async (req, res) => {
       new ApiResponse(200, alreadyPaid, "Payment already verified"),
     );
   }
+
+  const claimedOrder = claimResult.order;
 
   // Post-commit side effects — best effort, each isolated so one failure doesn't block others
   try {
@@ -616,7 +623,38 @@ export const downloadInvoice = asyncHandler(async (req, res) => {
       throw new ApiError(404, "Order not found");
     }
 
-    const html = generateInvoiceTemplate(order);
+    if (order.payment?.status !== "paid") {
+      throw new ApiError(409, "Order payment is not successful");
+    }
+
+    const transactions = await Transaction.find({
+      order: order._id,
+      transactionType: "order",
+      status: "success",
+    }).lean();
+    if (transactions.length !== 1) {
+      throw new ApiError(
+        409,
+        transactions.length > 1
+          ? "Order has ambiguous successful transactions"
+          : "Successful Order transaction not found",
+      );
+    }
+
+    const transaction = transactions[0];
+    if (
+      order.payment?.method === "razorpay" &&
+      order.payment.razorpayOrderId !== transaction.razorpayOrderId
+    ) {
+      throw new ApiError(409, "Order payment transaction is inconsistent");
+    }
+
+    const invoice = await findInvoiceForPdf({
+      sourceType: "order",
+      sourceId: order._id,
+      transactionId: transaction?._id,
+    });
+    const html = generateInvoiceTemplate(order, invoice?.invoiceNumber);
 
     const browser = await puppeteer.connect({
       browserWSEndpoint: process.env.PDF_SERVER,

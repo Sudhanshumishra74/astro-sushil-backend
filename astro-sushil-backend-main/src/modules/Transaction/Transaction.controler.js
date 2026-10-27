@@ -61,11 +61,6 @@ export const getAllTransactions = asyncHandler(async (req, res) => {
 
 const SUPPLIER_STATE = "Uttar Pradesh";
 
-const invoiceNumberFor = (txn) => {
-  const linkedId = txn.order?._id || txn.booking?._id || txn.report?._id;
-  return `INV-${String(linkedId || txn._id).slice(-8).toUpperCase()}`;
-};
-
 const customerNameFor = (txn) => {
   if (txn.transactionType === "report" && txn.report) {
     if (txn.report.reportType === "match_making_pdf") {
@@ -216,7 +211,7 @@ export const getGstReport = asyncHandler(async (req, res) => {
     return {
       transactionId: txn._id,
       date: txn.createdAt,
-      invoiceNo: invoiceNumberFor(txn),
+      invoiceNo: null,
       type: txn.transactionType,
       customerName: customerNameFor(txn),
       customerEmail: txn.user?.email || "",

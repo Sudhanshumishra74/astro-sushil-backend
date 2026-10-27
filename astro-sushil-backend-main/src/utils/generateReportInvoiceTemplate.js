@@ -55,8 +55,14 @@ const SUPPLIER_GSTIN = "09ABFCA5917P1Z2";
 // defaults to the supplier's own state per Sec 12(2) IGST Act.
 const SUPPLIER_STATE = "Uttar Pradesh";
 
-export const generateReportInvoiceTemplate = ({ order, transaction, user }) => {
-  const invoiceNo = `INV-${String(order._id).slice(-8).toUpperCase()}`;
+export const generateReportInvoiceTemplate = ({
+  order,
+  transaction,
+  user,
+  invoiceNumber,
+}) => {
+  const invoiceNo =
+    invoiceNumber || `INV-${String(order._id).slice(-8).toUpperCase()}`;
   const paymentStatus = (
     transaction?.status ||
     order.paymentStatus ||

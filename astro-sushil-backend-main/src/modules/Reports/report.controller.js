@@ -24,6 +24,7 @@ import { REPORT_CONFIG } from "../../utils/constants.js";
 import { normalizeDate } from "../../utils/time.js";
 import { createRazorpayOrder } from "../../utils/razorpay.js";
 import { computeGst } from "../../common/taxEngine.js";
+import { findInvoiceForPdf } from "../../service/invoicePdfService.js";
 
 const resolveReportGst = (report) => computeGst(report.salePrice, report.gst);
 
@@ -561,12 +562,43 @@ export const downloadReportInvoice = asyncHandler(async (req, res) => {
     throw new ApiError(404, "Order not found");
   }
 
-  const transaction = await Transaction.findOne({ report: order._id }).lean();
+  if (order.paymentStatus !== "paid") {
+    throw new ApiError(409, "Report payment is not successful");
+  }
+
+  const transactionQuery = {
+    report: order._id,
+    transactionType: "report",
+    status: "success",
+  };
+  if (order.razorpayOrderId) {
+    transactionQuery.razorpayOrderId = order.razorpayOrderId;
+  }
+  const transactions = await Transaction.find(transactionQuery).lean();
+  if (transactions.length !== 1) {
+    throw new ApiError(
+      409,
+      transactions.length > 1
+        ? "Report has ambiguous successful transactions"
+        : "Successful Report transaction not found",
+    );
+  }
+  const transaction = transactions[0];
   const user = await User.findById(req.user._id).select(
     "firstName lastName email phoneNumber",
   );
+  const invoice = await findInvoiceForPdf({
+    sourceType: "report",
+    sourceId: order._id,
+    transactionId: transaction?._id,
+  });
 
-  const html = generateReportInvoiceTemplate({ order, transaction, user });
+  const html = generateReportInvoiceTemplate({
+    order,
+    transaction,
+    user,
+    invoiceNumber: invoice?.invoiceNumber,
+  });
 
   const browser = await puppeteer.connect({
     browserWSEndpoint: process.env.PDF_SERVER,

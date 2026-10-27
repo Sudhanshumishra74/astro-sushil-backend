@@ -18,12 +18,17 @@ const SUPPLIER_GSTIN = "09ABFCA5917P1Z2";
 // defaults to the supplier's own state per Sec 12(2) IGST Act.
 const SUPPLIER_STATE = "Uttar Pradesh";
 
-export const generateBookingInvoiceTemplate = (booking) => {
+export const generateBookingInvoiceTemplate = (
+  booking,
+  persistedInvoiceNumber,
+) => {
   const consultation = booking.consultationId || {};
   const user = booking.userId || {};
   const transaction = booking.transactionId || {};
 
-  const invoiceNo = `INV-${String(booking._id).slice(-8).toUpperCase()}`;
+  const invoiceNo =
+    persistedInvoiceNumber ||
+    `INV-${String(booking._id).slice(-8).toUpperCase()}`;
   const modeLabel =
     booking.mode === "audio"
       ? "🎙️ Audio Call"

@@ -22,6 +22,7 @@ import { notificationQueue } from "../../queues/notification.queue.js";
 import { getRateFor } from "../../utils/exchangeRate.js";
 import { createRazorpayOrder } from "../../utils/razorpay.js";
 import { computeGst } from "../../common/taxEngine.js";
+import { findInvoiceForPdf } from "../../service/invoicePdfService.js";
 
 const normalize = (s) => s?.toString().trim().replace(/\s+/g, "");
 
@@ -558,7 +559,28 @@ export const downloadBookingInvoice = asyncHandler(async (req, res) => {
     throw new ApiError(404, "Booking not found");
   }
 
-  const html = generateBookingInvoiceTemplate(booking);
+  if (booking.paymentStatus !== "paid") {
+    throw new ApiError(409, "Booking payment is not successful");
+  }
+
+  const transaction = booking.transactionId;
+  if (
+    !transaction ||
+    typeof transaction !== "object" ||
+    transaction.status !== "success"
+  ) {
+    throw new ApiError(409, "Successful Booking transaction not found");
+  }
+
+  const invoice = await findInvoiceForPdf({
+    sourceType: "booking",
+    sourceId: booking._id,
+    transactionId: transaction._id,
+  });
+  const html = generateBookingInvoiceTemplate(
+    booking,
+    invoice?.invoiceNumber,
+  );
 
   const browser = await puppeteer.connect({
     browserWSEndpoint: process.env.PDF_SERVER,

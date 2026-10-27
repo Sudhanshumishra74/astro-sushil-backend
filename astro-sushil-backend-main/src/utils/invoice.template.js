@@ -70,7 +70,7 @@ const itemTypeBadge = (type = "") => {
 const SUPPLIER_GSTIN = "09ABFCA5917P1Z2";
 const SUPPLIER_STATE = "Uttar Pradesh";
 
-export const generateInvoiceTemplate = (order) => {
+export const generateInvoiceTemplate = (order, persistedInvoiceNumber) => {
   const round2 = (n) => Math.round(n * 100) / 100;
 
   const itemRows = (order.items || []).map((item) => ({
@@ -108,6 +108,7 @@ export const generateInvoiceTemplate = (order) => {
   const addr = order.shippingAddress || {};
   const payment = order.payment || {};
   const invoiceNo =
+    persistedInvoiceNumber ||
     order.invoiceNumber ||
     `INV-${String(order._id || "")
       .slice(-8)
