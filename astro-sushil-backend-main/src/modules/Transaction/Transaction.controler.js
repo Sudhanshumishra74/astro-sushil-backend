@@ -1,5 +1,6 @@
 import { Transaction } from "./Transaction.model.js";
 import { User } from "../auth/user.modal.js";
+import { Invoice } from "../Invoice/invoice.model.js";
 import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
@@ -181,6 +182,20 @@ export const getGstReport = asyncHandler(async (req, res) => {
     .sort({ createdAt: 1 })
     .lean();
 
+  const transactionIds = transactions.map((txn) => txn._id);
+  const invoices = await Invoice.find({
+    transaction: { $in: transactionIds },
+  })
+    .select("transaction invoiceNumber")
+    .lean();
+
+  const invoiceNumberByTransactionId = new Map(
+    invoices.map((invoice) => [
+      String(invoice.transaction),
+      invoice.invoiceNumber,
+    ]),
+  );
+
   const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
   const rows = transactions.map((txn) => {
@@ -211,7 +226,7 @@ export const getGstReport = asyncHandler(async (req, res) => {
     return {
       transactionId: txn._id,
       date: txn.createdAt,
-      invoiceNo: null,
+      invoiceNo: invoiceNumberByTransactionId.get(String(txn._id)) || null,
       type: txn.transactionType,
       customerName: customerNameFor(txn),
       customerEmail: txn.user?.email || "",
