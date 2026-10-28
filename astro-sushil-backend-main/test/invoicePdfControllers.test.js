@@ -154,6 +154,7 @@ before(async () => {
     reportFindOne: ReportOrder.findOne,
     transactionFind: Transaction.find,
     invoiceFindOne: Invoice.findOne,
+    invoiceFind: Invoice.find,
     invoiceCreate: Invoice.create,
     counterFindOneAndUpdate: InvoiceCounter.findOneAndUpdate,
   };
@@ -177,6 +178,7 @@ after(() => {
   ReportOrder.findOne = original.reportFindOne;
   Transaction.find = original.transactionFind;
   Invoice.findOne = original.invoiceFindOne;
+  Invoice.find = original.invoiceFind;
   Invoice.create = original.invoiceCreate;
   InvoiceCounter.findOneAndUpdate = original.counterFindOneAndUpdate;
   mock.restoreAll();
@@ -490,6 +492,12 @@ describe("PDF controller payment validation", () => {
   });
 
   it("keeps GST calculations and uses null for ordinary GST invoice numbers", async () => {
+    Invoice.find = () => ({
+      select() {
+        return this;
+      },
+      lean: async () => [],
+    });
     Transaction.find = () => {
       const query = {
         populate() {
