@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import mongoose from "mongoose";
 import Report from "./report.model.js";
 import ReportOrder from "./reportOrder.model.js";
 import { Transaction } from "../Transaction/Transaction.model.js";
@@ -25,6 +26,7 @@ import { normalizeDate } from "../../utils/time.js";
 import { createRazorpayOrder } from "../../utils/razorpay.js";
 import { computeGst } from "../../common/taxEngine.js";
 import { findInvoiceForPdf } from "../../service/invoicePdfService.js";
+import { allocateInvoiceInTransaction } from "../../service/invoiceAllocator.js";
 
 const resolveReportGst = (report) => computeGst(report.salePrice, report.gst);
 
@@ -487,23 +489,59 @@ export const verifyReportPayment = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Payment verification failed");
   }
 
-  // Atomic claim — only client or webhook runs report generation, never both
-  const claimed = await ReportOrder.findOneAndUpdate(
-    { razorpayOrderId: razorpay_order_id, paymentStatus: { $ne: "paid" } },
-    {
-      $set: {
-        paymentStatus: "paid",
-        razorpayPaymentId: razorpay_payment_id,
-        razorpaySignature: razorpay_signature,
-      },
-    },
-    { new: true },
-  ).populate(["reportId", "userId"]);
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
-  await Transaction.findOneAndUpdate(
-    { razorpayOrderId: razorpay_order_id },
-    { $set: { status: "success", transactionId: razorpay_payment_id } },
-  );
+  let claimed;
+  try {
+    const transaction = await Transaction.findOne({
+      razorpayOrderId: razorpay_order_id,
+    })
+      .session(session)
+      .lean();
+
+    if (!transaction) {
+      throw new ApiError(404, "Transaction not found");
+    }
+
+    // Atomic claim — only client or webhook runs report generation, never both
+    claimed = await ReportOrder.findOneAndUpdate(
+      { razorpayOrderId: razorpay_order_id, paymentStatus: { $ne: "paid" } },
+      {
+        $set: {
+          paymentStatus: "paid",
+          razorpayPaymentId: razorpay_payment_id,
+          razorpaySignature: razorpay_signature,
+        },
+      },
+      { new: true, session },
+    ).populate(["reportId", "userId"]);
+
+    if (claimed) {
+      const updatedTransaction = await Transaction.findOneAndUpdate(
+        { _id: transaction._id },
+        { $set: { status: "success", transactionId: razorpay_payment_id } },
+        { new: true, session },
+      );
+      if (!updatedTransaction) {
+        throw new ApiError(404, "Transaction not found");
+      }
+
+      await allocateInvoiceInTransaction({
+        sourceType: "report",
+        sourceId: claimed._id,
+        transactionId: updatedTransaction._id,
+        session,
+      });
+    }
+
+    await session.commitTransaction();
+  } catch (err) {
+    await session.abortTransaction();
+    throw err;
+  } finally {
+    await session.endSession();
+  }
 
   if (!claimed) {
     // Webhook already claimed and triggered report generation

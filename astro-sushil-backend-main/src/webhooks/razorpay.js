@@ -15,6 +15,7 @@ import { reduceStock } from "../modules/Order/order.controller.js";
 import { createDownloadsFromOrder } from "../modules/Download/download.controller.js";
 import { generateReportAfterPayment } from "../modules/Reports/report.controller.js";
 import { claimOrderPaymentWithInvoice } from "../service/orderPaymentService.js";
+import { allocateInvoiceInTransaction } from "../service/invoiceAllocator.js";
 
 // ─── Order helpers ────────────────────────────────────────────────────────────
 
@@ -114,11 +115,19 @@ async function claimBookingPayment({
 
   if (!booking) return null; // Already claimed by client verify
 
-  await Transaction.findByIdAndUpdate(
+  const transaction = await Transaction.findByIdAndUpdate(
     transactionId,
     { $set: { status: "success", transactionId: razorpayPaymentId } },
-    { session },
+    { new: true, session },
   );
+  if (!transaction) throw new Error("Transaction not found");
+
+  await allocateInvoiceInTransaction({
+    sourceType: "booking",
+    sourceId: booking._id,
+    transactionId: transaction._id,
+    session,
+  });
 
   return booking;
 }
@@ -169,11 +178,19 @@ async function claimReportPayment({
 
   if (!order) return null; // Already claimed by client verify
 
-  await Transaction.findByIdAndUpdate(
+  const transaction = await Transaction.findByIdAndUpdate(
     transactionId,
     { $set: { status: "success", transactionId: razorpayPaymentId } },
-    { session },
+    { new: true, session },
   );
+  if (!transaction) throw new Error("Transaction not found");
+
+  await allocateInvoiceInTransaction({
+    sourceType: "report",
+    sourceId: order._id,
+    transactionId: transaction._id,
+    session,
+  });
 
   return order;
 }
@@ -329,7 +346,7 @@ export async function razorpayWebhook(req, res) {
       });
 
       await session.commitTransaction();
-      session.endSession();
+      await endSessionOnce();
 
       if (!claimed) {
         console.info(
@@ -363,7 +380,7 @@ export async function razorpayWebhook(req, res) {
       });
 
       await session.commitTransaction();
-      session.endSession();
+      await endSessionOnce();
 
       if (!claimed) {
         console.info(

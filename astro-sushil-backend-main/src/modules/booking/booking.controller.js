@@ -23,6 +23,7 @@ import { getRateFor } from "../../utils/exchangeRate.js";
 import { createRazorpayOrder } from "../../utils/razorpay.js";
 import { computeGst } from "../../common/taxEngine.js";
 import { findInvoiceForPdf } from "../../service/invoicePdfService.js";
+import { allocateInvoiceInTransaction } from "../../service/invoiceAllocator.js";
 
 const normalize = (s) => s?.toString().trim().replace(/\s+/g, "");
 
@@ -181,11 +182,20 @@ async function claimPaymentSuccess({
     return null;
   }
 
-  await Transaction.findByIdAndUpdate(
+  const transaction = await Transaction.findByIdAndUpdate(
     transactionId,
     { $set: { status: "success", transactionId: razorpayPaymentId } },
-    { session },
+    { new: true, session },
   );
+  if (!transaction) throw new ApiError(404, "Transaction not found");
+
+  await allocateInvoiceInTransaction({
+    sourceType: "booking",
+    sourceId: updatedBooking._id,
+    transactionId: transaction._id,
+    session,
+  });
+
   return updatedBooking;
 }
 
@@ -395,7 +405,7 @@ export const verifyConsultationPayment = asyncHandler(async (req, res) => {
     });
 
     await session.commitTransaction();
-    session.endSession();
+    await session.endSession();
 
     if (!claimed) {
       // Webhook already processed this — return success, skip notification
@@ -941,6 +951,10 @@ export const createAdminBooking = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Slot already booked for this mode");
   }
 
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  let transactionCommitted = false;
+
   try {
     const priceInr = selectedMode.price?.inr || 0;
 
@@ -962,7 +976,7 @@ export const createAdminBooking = asyncHandler(async (req, res) => {
     const gst = computeGst(taxableInr, selectedMode.gst);
     const payableInr = gst.total;
 
-    const booking = await Booking.create({
+    const [booking] = await Booking.create([{
       consultationId,
       userId: finalUserId,
 
@@ -1000,14 +1014,14 @@ export const createAdminBooking = asyncHandler(async (req, res) => {
       bookingSource: "admin",
 
       note: note || undefined,
-    });
+    }], { session });
 
     // Admin-created bookings are marked paid immediately (no Razorpay
     // checkout), but still need a Transaction record — the GST report reads
     // only from Transaction, while the Dashboard revenue total reads
     // straight from Booking. Without this, admin bookings inflated the
     // Dashboard total but never showed up in the GST report.
-    const transaction = await Transaction.create({
+    const [transaction] = await Transaction.create([{
       user: finalUserId,
       booking: booking._id,
       transactionType: "consultation",
@@ -1024,10 +1038,21 @@ export const createAdminBooking = asyncHandler(async (req, res) => {
       discount: discountAmount,
       method: "manual",
       status: "success",
-    });
+    }], { session });
 
     booking.transactionId = transaction._id;
-    await booking.save();
+    await booking.save({ session });
+
+    await allocateInvoiceInTransaction({
+      sourceType: "booking",
+      sourceId: booking._id,
+      transactionId: transaction._id,
+      session,
+    });
+
+    await session.commitTransaction();
+    transactionCommitted = true;
+    await session.endSession();
 
     const populated = await Booking.findById(booking._id)
       .populate("consultationId")
@@ -1049,6 +1074,11 @@ export const createAdminBooking = asyncHandler(async (req, res) => {
       ),
     );
   } catch (err) {
+    if (!transactionCommitted) {
+      await session.abortTransaction();
+      await session.endSession();
+    }
+
     if (err.code === 11000) {
       throw new ApiError(400, "Slot already booked");
     }
