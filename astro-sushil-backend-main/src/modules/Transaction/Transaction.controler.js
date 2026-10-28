@@ -183,18 +183,87 @@ export const getGstReport = asyncHandler(async (req, res) => {
     .lean();
 
   const transactionIds = transactions.map((txn) => txn._id);
-  const invoices = await Invoice.find({
-    transaction: { $in: transactionIds },
-  })
-    .select("transaction invoiceNumber")
-    .lean();
+  const sourceReferenceFor = (txn) => {
+    if (txn.transactionType === "order") {
+      return {
+        sourceType: "order",
+        sourceId: txn.order?._id || txn.order,
+      };
+    }
+    if (txn.transactionType === "consultation") {
+      return {
+        sourceType: "booking",
+        sourceId: txn.booking?._id || txn.booking,
+      };
+    }
+    if (txn.transactionType === "report") {
+      return {
+        sourceType: "report",
+        sourceId: txn.report?._id || txn.report,
+      };
+    }
+    return null;
+  };
 
-  const invoiceNumberByTransactionId = new Map(
-    invoices.map((invoice) => [
-      String(invoice.transaction),
-      invoice.invoiceNumber,
-    ]),
-  );
+  const sourceReferences = transactions
+    .map(sourceReferenceFor)
+    .filter((reference) => reference?.sourceId != null);
+  const uniqueSourceReferences = [
+    ...new Map(
+      sourceReferences.map((reference) => [
+        `${reference.sourceType}:${String(reference.sourceId)}`,
+        reference,
+      ]),
+    ).values(),
+  ];
+  const invoiceLookup = transactions.length
+    ? [
+        { transaction: { $in: transactionIds } },
+        ...uniqueSourceReferences.map((reference) => ({
+          sourceType: reference.sourceType,
+          sourceId: reference.sourceId,
+        })),
+      ]
+    : [];
+
+  const invoices = invoiceLookup.length
+    ? await Invoice.find({ $or: invoiceLookup })
+        .select("transaction sourceType sourceId invoiceNumber")
+        .lean()
+    : [];
+
+  const invoiceNumberByTransactionId = new Map();
+  const invoiceNumberBySourceReference = new Map();
+  for (const invoice of invoices) {
+    if (invoice.transaction != null) {
+      invoiceNumberByTransactionId.set(
+        String(invoice.transaction),
+        invoice.invoiceNumber,
+      );
+    }
+    if (invoice.sourceType && invoice.sourceId != null) {
+      invoiceNumberBySourceReference.set(
+        `${invoice.sourceType}:${String(invoice.sourceId)}`,
+        invoice.invoiceNumber,
+      );
+    }
+  }
+
+  const invoiceNumberFor = (txn) => {
+    const reference = sourceReferenceFor(txn);
+    const sourceKey =
+      reference?.sourceId != null
+        ? `${reference.sourceType}:${String(reference.sourceId)}`
+        : null;
+
+    return (
+      (sourceKey
+        ? invoiceNumberBySourceReference.get(sourceKey)
+        : undefined) ||
+      invoiceNumberByTransactionId.get(String(txn._id)) ||
+      null
+    );
+  };
 
   const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 
@@ -226,7 +295,7 @@ export const getGstReport = asyncHandler(async (req, res) => {
     return {
       transactionId: txn._id,
       date: txn.createdAt,
-      invoiceNo: invoiceNumberByTransactionId.get(String(txn._id)) || null,
+      invoiceNo: invoiceNumberFor(txn),
       type: txn.transactionType,
       customerName: customerNameFor(txn),
       customerEmail: txn.user?.email || "",
