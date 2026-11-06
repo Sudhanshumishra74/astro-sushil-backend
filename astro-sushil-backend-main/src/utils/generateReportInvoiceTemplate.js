@@ -55,14 +55,12 @@ const SUPPLIER_GSTIN = "09ABFCA5917P1Z2";
 // defaults to the supplier's own state per Sec 12(2) IGST Act.
 const SUPPLIER_STATE = "Uttar Pradesh";
 
-export const generateReportInvoiceTemplate = ({
-  order,
-  transaction,
-  user,
-  invoiceNumber,
-}) => {
+export const generateReportInvoiceTemplate = ({ order, transaction, user }) => {
+  // order.invoiceNumber is assigned once, on first invoice view/download
+  // (see utils/invoiceSequence.js) — the id-slice fallback only matters for
+  // an order created before that existed and never re-downloaded since.
   const invoiceNo =
-    invoiceNumber || `INV-${String(order._id).slice(-8).toUpperCase()}`;
+    order.invoiceNumber || `INV-${String(order._id).slice(-8).toUpperCase()}`;
   const paymentStatus = (
     transaction?.status ||
     order.paymentStatus ||

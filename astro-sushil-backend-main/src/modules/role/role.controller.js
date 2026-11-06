@@ -5,6 +5,7 @@ import { ApiError } from "../../utils/ApiError.js";
 import { Role } from "./role.model.js";
 import { Permission } from "../permission/permission.model.js";
 import { Admin } from "../admin/admin.modal.js";
+import { diffFields, logActivity } from "../AuditLog/auditLog.service.js";
 
 const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -110,6 +111,15 @@ export const createRole = asyncHandler(async (req, res) => {
 
   const populated = await role.populate("permissions", "name module moduleLabel action label group");
 
+  await logActivity({
+    admin: req.user,
+    action: "role.create",
+    targetType: "Role",
+    targetId: role._id,
+    targetLabel: role.name,
+    changes: [],
+  });
+
   res.status(201).json(new ApiResponse(201, populated, "Role created successfully"));
 });
 
@@ -154,8 +164,38 @@ export const updateRole = asyncHandler(async (req, res) => {
     }
   }
 
+  const beforeSnapshot = role.toObject();
+
   Object.assign(role, data);
   await role.save();
+
+  const scalarChanges = diffFields(beforeSnapshot, role.toObject(), [
+    "name",
+    "slug",
+    "status",
+    "isSuperAdmin",
+  ]);
+
+  const beforePermissions = JSON.stringify((beforeSnapshot.permissions || []).map(String).sort());
+  const afterPermissions = JSON.stringify((role.permissions || []).map(String).sort());
+  const changes = [...scalarChanges];
+  if (beforePermissions !== afterPermissions) {
+    changes.push({
+      field: "permissions",
+      from: `${beforeSnapshot.permissions?.length ?? 0} permissions`,
+      to: `${role.permissions?.length ?? 0} permissions`,
+    });
+  }
+
+  await logActivity({
+    admin: req.user,
+    action: "role.update",
+    targetType: "Role",
+    targetId: role._id,
+    targetLabel: role.name,
+    changes,
+    skipIfNoChanges: true,
+  });
 
   const populated = await role.populate("permissions", "name module moduleLabel action label group");
 
@@ -177,8 +217,19 @@ export const updateRoleStatus = asyncHandler(async (req, res) => {
     throw new ApiError(400, "You cannot deactivate your own role");
   }
 
+  const beforeStatus = role.status;
   role.status = status;
   await role.save();
+
+  await logActivity({
+    admin: req.user,
+    action: "role.updateStatus",
+    targetType: "Role",
+    targetId: role._id,
+    targetLabel: role.name,
+    changes: diffFields({ status: beforeStatus }, { status: role.status }, ["status"]),
+    skipIfNoChanges: true,
+  });
 
   res.json(new ApiResponse(200, role, "Role status updated successfully"));
 });
@@ -205,7 +256,18 @@ export const deleteRole = asyncHandler(async (req, res) => {
     );
   }
 
+  const roleName = role.name;
+
   await Role.findByIdAndDelete(id);
+
+  await logActivity({
+    admin: req.user,
+    action: "role.delete",
+    targetType: "Role",
+    targetId: id,
+    targetLabel: roleName,
+    changes: [],
+  });
 
   res.json(new ApiResponse(200, null, "Role deleted successfully"));
 });

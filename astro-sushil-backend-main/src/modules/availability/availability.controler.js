@@ -8,6 +8,7 @@ import { Availability } from "./availability.model.js";
 import { availabilityZod } from "./availability.validation.js";
 import { generateSlots } from "./generateSlots.js";
 import { Schedule } from "./schedule.model.js";
+import { logActivity } from "../AuditLog/auditLog.service.js";
 
 export const setAvailability = asyncHandler(async (req, res) => {
   const result = availabilityZod.safeParse(req.body);
@@ -18,8 +19,17 @@ export const setAvailability = asyncHandler(async (req, res) => {
   }
 
   const availability = await Availability.findOneAndUpdate({}, result.data, {
-    new: true,
+    returnDocument: "after",
     upsert: true,
+  });
+
+  await logActivity({
+    admin: req.user,
+    action: "availability.update",
+    targetType: "Availability",
+    targetId: availability?._id,
+    targetLabel: "Weekly Availability",
+    changes: [],
   });
 
   return res
@@ -42,8 +52,17 @@ export const blockFullDay = asyncHandler(async (req, res) => {
   const schedule = await Schedule.findOneAndUpdate(
     { date },
     { isBlocked: true, blockedSlots: [] },
-    { new: true, upsert: true },
+    { returnDocument: "after", upsert: true },
   );
+
+  await logActivity({
+    admin: req.user,
+    action: "availability.blockDay",
+    targetType: "Schedule",
+    targetId: schedule?._id,
+    targetLabel: date,
+    changes: [],
+  });
 
   return res.status(200).json(new ApiResponse(200, schedule, "Day blocked"));
 });
@@ -54,8 +73,17 @@ export const unblockFullDay = asyncHandler(async (req, res) => {
   const schedule = await Schedule.findOneAndUpdate(
     { date },
     { isBlocked: false },
-    { new: true },
+    { returnDocument: "after" },
   );
+
+  await logActivity({
+    admin: req.user,
+    action: "availability.unblockDay",
+    targetType: "Schedule",
+    targetId: schedule?._id,
+    targetLabel: date,
+    changes: [],
+  });
 
   return res.status(200).json(new ApiResponse(200, schedule, "Day unblocked"));
 });
@@ -72,8 +100,17 @@ export const blockSlots = asyncHandler(async (req, res) => {
     {
       $addToSet: { blockedSlots: { $each: slots } },
     },
-    { new: true, upsert: true },
+    { returnDocument: "after", upsert: true },
   );
+
+  await logActivity({
+    admin: req.user,
+    action: "availability.blockSlots",
+    targetType: "Schedule",
+    targetId: schedule?._id,
+    targetLabel: date,
+    changes: [{ field: "blockedSlots", from: null, to: JSON.stringify(slots) }],
+  });
 
   return res.status(200).json(new ApiResponse(200, schedule, "Slots blocked"));
 });
@@ -86,8 +123,17 @@ export const unblockSlots = asyncHandler(async (req, res) => {
     {
       $pull: { blockedSlots: { $in: slots } },
     },
-    { new: true },
+    { returnDocument: "after" },
   );
+
+  await logActivity({
+    admin: req.user,
+    action: "availability.unblockSlots",
+    targetType: "Schedule",
+    targetId: schedule?._id,
+    targetLabel: date,
+    changes: [{ field: "blockedSlots", from: JSON.stringify(slots), to: null }],
+  });
 
   return res
     .status(200)

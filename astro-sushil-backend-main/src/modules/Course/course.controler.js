@@ -3,6 +3,7 @@ import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { Course } from "./course.modal.js";
+import { diffFields, logActivity } from "../AuditLog/auditLog.service.js";
 
 export const generateSlug = (text) =>
   text
@@ -40,6 +41,15 @@ export const createCourse = asyncHandler(async (req, res) => {
   }
 
   const course = await Course.create(data);
+
+  await logActivity({
+    admin: req.user,
+    action: "course.create",
+    targetType: "Course",
+    targetId: course._id,
+    targetLabel: course.title,
+    changes: [],
+  });
 
   res.json(new ApiResponse(201, course, "Course created"));
 });
@@ -91,9 +101,21 @@ export const updateCourse = asyncHandler(async (req, res) => {
     data.thumbnailKey = uploaded.key;
   }
 
+  const before = await Course.findById(id).lean();
+
   const updated = await Course.findByIdAndUpdate(id, data, {
-    new: true,
+    returnDocument: "after",
     runValidators: true,
+  });
+
+  await logActivity({
+    admin: req.user,
+    action: "course.update",
+    targetType: "Course",
+    targetId: updated?._id ?? id,
+    targetLabel: updated?.title || before?.title,
+    changes: diffFields(before, updated?.toObject?.() ?? updated, Object.keys(req.body)),
+    skipIfNoChanges: true,
   });
 
   res.json(new ApiResponse(200, updated, "Course updated"));
@@ -139,7 +161,19 @@ export const deleteCourse = asyncHandler(async (req, res) => {
     await deleteFile(course.thumbnailKey);
   }
 
+  const deletedTitle = course.title;
+  const deletedId = course._id;
+
   await course.deleteOne();
+
+  await logActivity({
+    admin: req.user,
+    action: "course.delete",
+    targetType: "Course",
+    targetId: deletedId,
+    targetLabel: deletedTitle,
+    changes: [],
+  });
 
   res.json(new ApiResponse(200, {}, "Deleted"));
 });

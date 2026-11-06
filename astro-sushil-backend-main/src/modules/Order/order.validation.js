@@ -11,6 +11,11 @@ export const createOrderSchema = z.object({
 
 
   addressId: z.string().optional().nullable(),
+
+  // Client-generated per-checkout-attempt token — see createOrder's use of
+  // it for why (a network retry or a double-click shouldn't create two
+  // separate orders off the same cart).
+  idempotencyKey: z.string().trim().min(1).max(100).optional().nullable(),
 });
 
 export const verifyPaymentSchema = z.object({

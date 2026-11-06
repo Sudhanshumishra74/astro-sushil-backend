@@ -134,16 +134,11 @@ const bookingSchema = new mongoose.Schema(
       trim: true,
     },
 
-    // Internal notes an admin adds when rescheduling or changing this
-    // booking's plan — staff reference only, NEVER shown to the customer
-    // (unlike `note` above). Kept as a history rather than a single
-    // overwritable field, so a later reschedule/plan change doesn't erase
-    // the reasoning recorded for an earlier one. `addedBy` is a snapshot of
-    // the admin's name at write time, not a ref — same reasoning as other
-    // snapshotted display fields elsewhere in this codebase (e.g. order
-    // item names), so the note still reads correctly even if that admin
-    // account is later renamed or removed.
     adminNotes: { type: [adminNoteSchema], default: [] },
+
+    // Assigned once, the first time this booking's invoice is actually
+    // viewed/downloaded (see utils/invoiceSequence.js).
+    invoiceNumber: { type: String, default: null },
 
     reminderSent: {
       type: Boolean,
@@ -162,6 +157,18 @@ const bookingSchema = new mongoose.Schema(
     deletedAt: {
       type: Date,
     },
+
+    recommendedProducts: [
+      {
+        product: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Product",
+          required: true,
+        },
+        note: { type: String, default: "" },
+        recommendedAt: { type: Date, default: Date.now },
+      },
+    ],
   },
   { timestamps: true },
 );

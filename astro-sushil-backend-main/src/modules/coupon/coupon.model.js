@@ -79,6 +79,16 @@ const couponSchema = new mongoose.Schema(
           type: Date,
           default: Date.now,
         },
+        // Which order this specific claim belongs to — without this,
+        // releaseCouponUsage (priceengine.js) had no way to $pull just the
+        // one entry for a cancelled order without also removing every
+        // other order's claim by the same user on a multi-use-per-user
+        // coupon (oneTimePerUser: false, usageLimit > 1).
+        order: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Order",
+          default: null,
+        },
       },
     ],
 

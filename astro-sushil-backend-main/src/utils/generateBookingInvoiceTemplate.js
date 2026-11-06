@@ -18,17 +18,16 @@ const SUPPLIER_GSTIN = "09ABFCA5917P1Z2";
 // defaults to the supplier's own state per Sec 12(2) IGST Act.
 const SUPPLIER_STATE = "Uttar Pradesh";
 
-export const generateBookingInvoiceTemplate = (
-  booking,
-  persistedInvoiceNumber,
-) => {
+export const generateBookingInvoiceTemplate = (booking) => {
   const consultation = booking.consultationId || {};
   const user = booking.userId || {};
   const transaction = booking.transactionId || {};
 
+  // booking.invoiceNumber is assigned once, on first invoice view/download
+  // (see utils/invoiceSequence.js) — the id-slice fallback only matters for
+  // a booking created before that existed and never re-downloaded since.
   const invoiceNo =
-    persistedInvoiceNumber ||
-    `INV-${String(booking._id).slice(-8).toUpperCase()}`;
+    booking.invoiceNumber || `INV-${String(booking._id).slice(-8).toUpperCase()}`;
   const modeLabel =
     booking.mode === "audio"
       ? "🎙️ Audio Call"

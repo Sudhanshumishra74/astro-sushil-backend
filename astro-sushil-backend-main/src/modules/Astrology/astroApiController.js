@@ -50,9 +50,14 @@ export const generateKundli = async (req, res) => {
 
 export const getMatchMaking = async (req, res) => {
   try {
+    // male_name/female_name are accepted for display purposes only (see
+    // matchMakingSchema) — the vendor's match endpoint has no name field,
+    // so they're excluded from the forwarded body.
+    const { male_name, female_name, ...vendorQuery } = req.query;
+
     const result = await astrologyApiRequest({
       path: "match",
-      body: req.query,
+      body: vendorQuery,
     });
     return res.json(result);
   } catch (error) {

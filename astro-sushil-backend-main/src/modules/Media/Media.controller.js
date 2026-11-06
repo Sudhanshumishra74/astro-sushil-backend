@@ -7,6 +7,23 @@ import { createMediaSchema, updateMediaSchema } from "./Media.validation.js";
 import { Media } from "./Media.model.js";
 
 import { deleteFile, uploadFile } from "../../service/UploadAws.js";
+import { diffFields, logActivity } from "../AuditLog/auditLog.service.js";
+
+const MEDIA_AUDIT_FIELDS = [
+  "title",
+  "description",
+  "section",
+  "type",
+  "mediaUrl",
+  "mediaKey",
+  "thumbnail",
+  "thumbnailKey",
+  "tag",
+  "personName",
+  "background",
+  "isActive",
+  "order",
+];
 
 export const createMedia = asyncHandler(async (req, res) => {
   const payload = {
@@ -111,6 +128,15 @@ data.thumbnailKey = uploaded.key;
   const media = await Media.create({
     ...data,
     createdBy: req.user?._id,
+  });
+
+  await logActivity({
+    admin: req.user,
+    action: "media.create",
+    targetType: "Media",
+    targetId: media._id,
+    targetLabel: media?.title,
+    changes: [],
   });
 
   return res
@@ -266,11 +292,23 @@ data.thumbnailKey = uploaded.key;
     }
   }
 
+  const beforeSnapshot = media.toObject();
+
   Object.assign(media, data, {
     updatedBy: req.user?._id,
   });
 
   await media.save();
+
+  await logActivity({
+    admin: req.user,
+    action: "media.update",
+    targetType: "Media",
+    targetId: media._id,
+    targetLabel: media?.title,
+    changes: diffFields(beforeSnapshot, media.toObject(), MEDIA_AUDIT_FIELDS),
+    skipIfNoChanges: true,
+  });
 
   return res
     .status(200)
@@ -298,7 +336,19 @@ export const deleteMedia = asyncHandler(async (req, res) => {
     await deleteFile(media.thumbnailKey);
   }
 
+  const mediaLabel = media?.title;
+  const mediaId = media._id;
+
   await media.deleteOne();
+
+  await logActivity({
+    admin: req.user,
+    action: "media.delete",
+    targetType: "Media",
+    targetId: mediaId,
+    targetLabel: mediaLabel,
+    changes: [],
+  });
 
   return res
     .status(200)

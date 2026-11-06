@@ -6,10 +6,11 @@ import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 
 import { Booking } from "./booking.model.js";
-import { bookingZod } from "./booking.validation.js";
+import { bookingZod, recommendProductsZod } from "./booking.validation.js";
 
 import { User } from "../auth/user.modal.js";
 import { Consultation } from "../consultation/consultation.modal.js";
+import { Product } from "../products/product.modal.js";
 
 import { nowIST, parseDateIST } from "../../utils/time.js";
 
@@ -18,12 +19,12 @@ import { Availability } from "../availability/availability.model.js";
 import { Schedule } from "../availability/schedule.model.js";
 import { Transaction } from "../Transaction/Transaction.model.js";
 import { generateBookingInvoiceTemplate } from "../../utils/generateBookingInvoiceTemplate.js";
+import { ensureSequenceNumber, formatInvoiceNumber } from "../../utils/invoiceSequence.js";
 import { notificationQueue } from "../../queues/notification.queue.js";
 import { getRateFor } from "../../utils/exchangeRate.js";
 import { createRazorpayOrder } from "../../utils/razorpay.js";
 import { computeGst } from "../../common/taxEngine.js";
-import { findInvoiceForPdf } from "../../service/invoicePdfService.js";
-import { allocateInvoiceInTransaction } from "../../service/invoiceAllocator.js";
+import { diffFields, logActivity } from "../AuditLog/auditLog.service.js";
 
 const normalize = (s) => s?.toString().trim().replace(/\s+/g, "");
 
@@ -175,27 +176,18 @@ async function claimPaymentSuccess({
   const updatedBooking = await Booking.findOneAndUpdate(
     { _id: bookingId, paymentStatus: { $ne: "paid" } },
     { $set: { paymentStatus: "paid", status: "booked" } },
-    { new: true, session },
+    { returnDocument: "after", session },
   );
 
   if (!updatedBooking) {
     return null;
   }
 
-  const transaction = await Transaction.findByIdAndUpdate(
+  await Transaction.findByIdAndUpdate(
     transactionId,
     { $set: { status: "success", transactionId: razorpayPaymentId } },
-    { new: true, session },
+    { session },
   );
-  if (!transaction) throw new ApiError(404, "Transaction not found");
-
-  await allocateInvoiceInTransaction({
-    sourceType: "booking",
-    sourceId: updatedBooking._id,
-    transactionId: transaction._id,
-    session,
-  });
-
   return updatedBooking;
 }
 
@@ -208,7 +200,7 @@ export const createUserBooking = asyncHandler(async (req, res) => {
     throw new ApiError(400, errors.join(", "));
   }
 
-  const { consultationId, mode, date, slot, currency = "INR" } = result.data;
+  const { consultationId, mode, date, slot, currency = "INR", note } = result.data;
 
   if (!req.user?._id) throw new ApiError(401, "Unauthorized");
 
@@ -230,7 +222,11 @@ export const createUserBooking = asyncHandler(async (req, res) => {
 
     const currencyKey = currency.toLowerCase();
     const priceInr = selectedMode.price?.inr || 0;
-    const exchangeRate = (await getRateFor(currency)) || 1;
+    // getRateFor now throws on a missing/invalid rate instead of returning
+    // 0 (order.controller.js's createOrder had the exact same `|| 1`
+    // silently-mispriced-as-1:1-INR bug) — left uncaught so a bad rate
+    // fails this booking cleanly instead of mispricing it.
+    const exchangeRate = await getRateFor(currency);
 
     // Each consultation mode carries its own GST config. Inclusive means the
     // charge amount is unchanged (tax is backed out of priceInr for records);
@@ -268,6 +264,7 @@ export const createUserBooking = asyncHandler(async (req, res) => {
           priceLabel: consultation.priceLabel,
           date: normalizedDate,
           slot: normalize(slot),
+          note,
           status: "pending",
           paymentStatus: "pending",
         },
@@ -405,7 +402,7 @@ export const verifyConsultationPayment = asyncHandler(async (req, res) => {
     });
 
     await session.commitTransaction();
-    await session.endSession();
+    session.endSession();
 
     if (!claimed) {
       // Webhook already processed this — return success, skip notification
@@ -445,9 +442,11 @@ export const getMyBookings = asyncHandler(async (req, res) => {
     // never reaches the customer's own browser, not just hidden in the UI.
     .select("-adminNotes")
     .populate("consultationId")
+    .populate("recommendedProducts.product")
     .sort({
       createdAt: -1,
-    });
+    })
+    .lean();
 
   return res.json(new ApiResponse(200, bookings, "My bookings fetched"));
 });
@@ -482,6 +481,10 @@ export const getAllBookings = asyncHandler(async (req, res) => {
   const bookings = await Booking.find(filter)
     .populate("consultationId") // full data
     .populate("userId") // full data
+    .populate(
+      "recommendedProducts.product",
+      "name price mrp hasVariants variants thumbnail images slug",
+    )
     .sort({ createdAt: -1 });
 
   const formattedBookings = bookings.map((booking) => {
@@ -521,13 +524,107 @@ export const getBookingById = asyncHandler(async (req, res) => {
 
   const booking = await Booking.findById(id)
     .populate("consultationId")
-    .populate("userId");
+    .populate("userId")
+    .populate(
+      "recommendedProducts.product",
+      "name price mrp hasVariants variants thumbnail images slug",
+    );
 
   if (!booking) {
     throw new ApiError(404, "Booking not found");
   }
 
   return res.status(200).json(new ApiResponse(200, booking, "Booking fetched"));
+});
+
+// Appends (never replaces) — a follow-up consultation on the same booking
+// can add another recommendation later without losing or re-notifying about
+// earlier ones. Each call notifies the customer about only the items it
+// just added, not the booking's full accumulated history.
+export const recommendProducts = asyncHandler(async (req, res) => {
+  const { bookingId } = req.params;
+
+  if (!mongoose.Types.ObjectId.isValid(bookingId)) {
+    throw new ApiError(400, "Invalid booking id");
+  }
+
+  const parsed = recommendProductsZod.safeParse(req.body);
+  if (!parsed.success) {
+    throw new ApiError(400, "Invalid input", parsed.error.errors);
+  }
+  const { items } = parsed.data;
+
+  const booking = await Booking.findOne({ _id: bookingId, isDeleted: false })
+    .populate("userId", "firstName email phoneNumber")
+    .populate("consultationId", "title");
+
+  if (!booking) {
+    throw new ApiError(404, "Booking not found");
+  }
+
+  const productIds = items.map((item) => item.productId);
+  const products = await Product.find({ _id: { $in: productIds } }).select(
+    "name price thumbnail images slug",
+  );
+
+  if (products.length !== new Set(productIds).size) {
+    throw new ApiError(404, "One or more products not found");
+  }
+
+  const productMap = new Map(products.map((p) => [String(p._id), p]));
+
+  booking.recommendedProducts.push(
+    ...items.map((item) => ({
+      product: item.productId,
+      note: item.note || "",
+      recommendedAt: new Date(),
+    })),
+  );
+
+  await booking.save();
+
+  await logActivity({
+    admin: req.user,
+    action: "booking.recommend_products",
+    targetType: "Booking",
+    targetId: booking._id,
+    targetLabel: booking._id.toString(),
+    changes: items.map((item) => ({
+      field: "recommendedProducts",
+      from: null,
+      to: productMap.get(String(item.productId))?.name || item.productId,
+    })),
+    skipIfNoChanges: false,
+  });
+
+  const user = booking.userId;
+  if (user?.email || user?.phoneNumber) {
+    await notificationQueue.add("booking-products-recommended", {
+      bookingId: booking._id.toString(),
+      userEmail: user.email,
+      userName: user.firstName,
+      userPhone: user.phoneNumber,
+      consultationTitle: booking.consultationId?.title,
+      items: items.map((item) => {
+        const product = productMap.get(String(item.productId));
+        return {
+          name: product?.name,
+          image: product?.thumbnail || product?.images?.[0],
+          slug: product?.slug,
+          note: item.note || "",
+        };
+      }),
+    });
+  }
+
+  const populated = await Booking.findById(booking._id).populate(
+    "recommendedProducts.product",
+    "name price mrp hasVariants variants thumbnail images slug",
+  );
+
+  return res.json(
+    new ApiResponse(200, populated.recommendedProducts, "Products recommended to customer"),
+  );
 });
 
 export const deleteBooking = asyncHandler(async (req, res) => {
@@ -543,10 +640,24 @@ export const deleteBooking = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Booking already deleted");
   }
 
+  const user = await User.findById(booking.userId).select("firstName lastName").lean();
+  const label =
+    [user?.firstName, user?.lastName].filter(Boolean).join(" ") ||
+    booking._id.toString();
+
   booking.isDeleted = true;
   booking.deletedAt = new Date();
 
   await booking.save();
+
+  await logActivity({
+    admin: req.user,
+    action: "booking.delete",
+    targetType: "Booking",
+    targetId: booking._id,
+    targetLabel: label,
+    changes: [],
+  });
 
   return res
     .status(200)
@@ -569,28 +680,13 @@ export const downloadBookingInvoice = asyncHandler(async (req, res) => {
     throw new ApiError(404, "Booking not found");
   }
 
-  if (booking.paymentStatus !== "paid") {
-    throw new ApiError(409, "Booking payment is not successful");
-  }
-
-  const transaction = booking.transactionId;
-  if (
-    !transaction ||
-    typeof transaction !== "object" ||
-    transaction.status !== "success"
-  ) {
-    throw new ApiError(409, "Successful Booking transaction not found");
-  }
-
-  const invoice = await findInvoiceForPdf({
-    sourceType: "booking",
-    sourceId: booking._id,
-    transactionId: transaction._id,
+  await ensureSequenceNumber(Booking, booking, {
+    field: "invoiceNumber",
+    counterKey: "invoice",
+    formatter: formatInvoiceNumber,
   });
-  const html = generateBookingInvoiceTemplate(
-    booking,
-    invoice?.invoiceNumber,
-  );
+
+  const html = generateBookingInvoiceTemplate(booking);
 
   const browser = await puppeteer.connect({
     browserWSEndpoint: process.env.PDF_SERVER,
@@ -611,6 +707,9 @@ export const downloadBookingInvoice = asyncHandler(async (req, res) => {
   }
 
   res.setHeader("Content-Type", "application/pdf");
+  // Never let the browser reuse a cached response for this URL — see the
+  // matching comment in order.controller.js's downloadInvoice.
+  res.setHeader("Cache-Control", "no-store");
   res.setHeader(
     "Content-Disposition",
     `attachment; filename=booking-invoice-${bookingId}.pdf`,
@@ -678,6 +777,8 @@ export const rescheduleBooking = asyncHandler(async (req, res) => {
     slot: booking.slot,
   };
 
+  const beforeSnapshot = booking.toObject();
+
   booking.date = normalizedDate;
   booking.slot = normalizedSlot;
 
@@ -690,6 +791,16 @@ export const rescheduleBooking = asyncHandler(async (req, res) => {
   }
 
   await booking.save();
+
+  await logActivity({
+    admin: req.user,
+    action: "booking.reschedule",
+    targetType: "Booking",
+    targetId: booking._id,
+    targetLabel: booking._id.toString(),
+    changes: diffFields(beforeSnapshot, booking.toObject(), ["date", "slot"]),
+    skipIfNoChanges: false,
+  });
 
   const populated = await Booking.findById(booking._id)
     .populate("consultationId")
@@ -775,6 +886,8 @@ export const updateBookingPlan = asyncHandler(async (req, res) => {
     selectedMode.price?.[booking.currency?.toLowerCase()] ??
     Number((newPayableInr * (booking.exchangeRate || 1)).toFixed(2));
 
+  const beforeSnapshot = booking.toObject();
+
   booking.consultationId = consultation._id;
   booking.mode = selectedMode.mode;
   booking.price = {
@@ -801,6 +914,23 @@ export const updateBookingPlan = asyncHandler(async (req, res) => {
   }
 
   await booking.save();
+
+  await logActivity({
+    admin: req.user,
+    action: "booking.changePlan",
+    targetType: "Booking",
+    targetId: booking._id,
+    targetLabel: booking._id.toString(),
+    changes: diffFields(beforeSnapshot, booking.toObject(), [
+      "consultationId",
+      "mode",
+      "amount",
+      "baseAmount",
+      "duration",
+      "priceLabel",
+    ]),
+    skipIfNoChanges: false,
+  });
 
   // Keep the linked Transaction's amount/GST in sync with the booking's new
   // plan — the GST report reads from Transaction, not Booking, so leaving it
@@ -951,10 +1081,6 @@ export const createAdminBooking = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Slot already booked for this mode");
   }
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
-  let transactionCommitted = false;
-
   try {
     const priceInr = selectedMode.price?.inr || 0;
 
@@ -976,7 +1102,7 @@ export const createAdminBooking = asyncHandler(async (req, res) => {
     const gst = computeGst(taxableInr, selectedMode.gst);
     const payableInr = gst.total;
 
-    const [booking] = await Booking.create([{
+    const booking = await Booking.create({
       consultationId,
       userId: finalUserId,
 
@@ -1014,14 +1140,14 @@ export const createAdminBooking = asyncHandler(async (req, res) => {
       bookingSource: "admin",
 
       note: note || undefined,
-    }], { session });
+    });
 
     // Admin-created bookings are marked paid immediately (no Razorpay
     // checkout), but still need a Transaction record — the GST report reads
     // only from Transaction, while the Dashboard revenue total reads
     // straight from Booking. Without this, admin bookings inflated the
     // Dashboard total but never showed up in the GST report.
-    const [transaction] = await Transaction.create([{
+    const transaction = await Transaction.create({
       user: finalUserId,
       booking: booking._id,
       transactionType: "consultation",
@@ -1038,21 +1164,19 @@ export const createAdminBooking = asyncHandler(async (req, res) => {
       discount: discountAmount,
       method: "manual",
       status: "success",
-    }], { session });
-
-    booking.transactionId = transaction._id;
-    await booking.save({ session });
-
-    await allocateInvoiceInTransaction({
-      sourceType: "booking",
-      sourceId: booking._id,
-      transactionId: transaction._id,
-      session,
     });
 
-    await session.commitTransaction();
-    transactionCommitted = true;
-    await session.endSession();
+    booking.transactionId = transaction._id;
+    await booking.save();
+
+    await logActivity({
+      admin: req.user,
+      action: "booking.create",
+      targetType: "Booking",
+      targetId: booking._id,
+      targetLabel: name || booking._id.toString(),
+      changes: [],
+    });
 
     const populated = await Booking.findById(booking._id)
       .populate("consultationId")
@@ -1074,11 +1198,6 @@ export const createAdminBooking = asyncHandler(async (req, res) => {
       ),
     );
   } catch (err) {
-    if (!transactionCommitted) {
-      await session.abortTransaction();
-      await session.endSession();
-    }
-
     if (err.code === 11000) {
       throw new ApiError(400, "Slot already booked");
     }

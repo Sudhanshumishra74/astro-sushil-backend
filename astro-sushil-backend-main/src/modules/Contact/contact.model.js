@@ -24,11 +24,6 @@ const contactSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
-    remarks: {
-      type: String,
-      trim: true,
-      default: "",
-    },
   },
   { timestamps: true }
 );

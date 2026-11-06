@@ -17,11 +17,13 @@ import { verifyToken } from "../../middlewares/verifyToken.js";
 import { adminVerifyJWT } from "../../middlewares/adminVerifyJWT.js";
 import { authorize } from "../../middlewares/authorize.js";
 import { checkPhysicalProductAddress } from "../../middlewares/checkPhysicalProductAddress.js";
+import { createReturnRequest, downloadCreditNote } from "../Return/return.controller.js";
 
 const router = express.Router();
 
 router.get("/admin/all", adminVerifyJWT, authorize("orders.view"), getAllOrders);
 router.get("/admin/reports", adminVerifyJWT, authorize("orders.export"), getOrderReports);
+
 router.get("/admin/:orderId", adminVerifyJWT, authorize("orders.view"), getAdminOrderDetails);
 router.patch("/admin/:orderId/status", adminVerifyJWT, authorize("orders.edit"), updateOrderStatus);
 
@@ -32,6 +34,8 @@ router.get("/my-orders", verifyToken, getMyOrders);
 
 router.patch("/:orderId/cancel", verifyToken, cancelOrder);
 router.get("/:orderId/invoice", verifyToken, downloadInvoice);
+router.post("/:orderId/return", verifyToken, createReturnRequest);
+router.get("/:orderId/returns/:returnId/credit-note", verifyToken, downloadCreditNote);
 
 router.get("/:orderId", verifyToken, getOrderDetails);
 

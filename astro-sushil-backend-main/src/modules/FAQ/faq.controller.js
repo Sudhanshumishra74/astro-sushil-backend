@@ -6,6 +6,9 @@ import {
   faqUpdateSchema,
 } from "./faq.validation.js";
 import FAQ from "./faqs.model.js";
+import { diffFields, logActivity } from "../AuditLog/auditLog.service.js";
+
+const FAQ_AUDIT_FIELDS = ["question", "answer", "page", "isActive", "order"];
 
 export const createFAQ = asyncHandler(async (req, res) => {
   const parsed = faqCreateSchema.safeParse(req.body);
@@ -17,6 +20,15 @@ export const createFAQ = asyncHandler(async (req, res) => {
   const faq = await FAQ.create({
     ...parsed.data,
     createdBy: req.user?._id,
+  });
+
+  await logActivity({
+    admin: req.user,
+    action: "faq.create",
+    targetType: "FAQ",
+    targetId: faq._id,
+    targetLabel: faq?.question,
+    changes: [],
   });
 
   return res
@@ -58,11 +70,23 @@ export const updateFAQ = asyncHandler(async (req, res) => {
     throw new ApiError(404, "FAQ not found");
   }
 
+  const beforeSnapshot = faq.toObject();
+
   Object.assign(faq, parsed.data, {
     updatedBy: req.user?._id,
   });
 
   await faq.save();
+
+  await logActivity({
+    admin: req.user,
+    action: "faq.update",
+    targetType: "FAQ",
+    targetId: faq._id,
+    targetLabel: faq?.question,
+    changes: diffFields(beforeSnapshot, faq.toObject(), FAQ_AUDIT_FIELDS),
+    skipIfNoChanges: true,
+  });
 
   return res
     .status(200)
@@ -76,7 +100,19 @@ export const deleteFAQ = asyncHandler(async (req, res) => {
     throw new ApiError(404, "FAQ not found");
   }
 
+  const faqLabel = faq?.question;
+  const faqId = faq._id;
+
   await faq.deleteOne();
+
+  await logActivity({
+    admin: req.user,
+    action: "faq.delete",
+    targetType: "FAQ",
+    targetId: faqId,
+    targetLabel: faqLabel,
+    changes: [],
+  });
 
   return res
     .status(200)

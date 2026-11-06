@@ -45,11 +45,30 @@ const settingSchema = new mongoose.Schema(
       deliveryChargePerKM: { type: Number, default: 5 },
       maxCODLimit: { type: Number, default: 20000 },
       supportedAreas: { type: [String], default: [] },
+
+      // Whether self-fulfilled (own inventory) orders get charged shipping
+      // at all — off means always ₹0, and resolveSelfShippingCost skips
+      // the Shiprocket serviceability call entirely (see
+      // shippingQuote.service.js). Independent of whether the order still
+      // actually ships via Shiprocket after payment — that's fulfillment,
+      // not pricing.
+      chargeSelfFulfilled: { type: Boolean, default: true },
+
+      // Whether the cart/checkout/order shipping total is shown as one
+      // combined "Shipping" line or its own separate line. A live display
+      // preference, not a per-order snapshot — changing this changes how
+      // every order renders, past and future.
+      displayMode: { type: String, enum: ["merged", "separate"], default: "merged" },
     },
 
     product: {
       lowStockWarning: { type: Number, default: 5 },
       maxQuantityInCart: { type: Number, default: 10 },
+
+      // Site-wide switch for the product certificates feature (see
+      // product.modal.js's certificates array) — off hides certificate
+      // selection everywhere and rejects a certificateId at addToCart.
+      certificatesEnabled: { type: Boolean, default: false },
     },
 
     offers: {
@@ -60,8 +79,31 @@ const settingSchema = new mongoose.Schema(
 
     order: {
       autoCancelUnpaidMinutes: { type: Number, default: 60 },
+      // Hours after order placement within which a customer may
+      // self-cancel — 0 means no time limit (only the "not delivered yet"
+      // rule applies), mirroring returnPolicyDays' role for returns.
+      cancellationWindowHours: { type: Number, default: 24 },
       returnPolicyDays: { type: Number, default: 7 },
       maxOrderValue: { type: Number, default: 100000 },
+    },
+
+    // Admin-editable Shiprocket credentials/business config — falls back to
+    // SHIPROCKET_* env vars when a field here is blank (see
+    // config/shiprocket.js's getShiprocketConfig). `password` is write-only:
+    // setting.controller.js redacts it on every GET.
+    shiprocket: {
+      email: { type: String, default: "" },
+      password: { type: String, default: "" },
+      webhookToken: { type: String, default: "" },
+      pickupLocation: { type: String, default: "" },
+      pickupPincode: { type: String, default: "" },
+      warehouseName: { type: String, default: "Warehouse" },
+      warehouseEmail: { type: String, default: "" },
+      warehousePhone: { type: String, default: "" },
+      warehouseAddress: { type: String, default: "" },
+      warehouseCity: { type: String, default: "" },
+      warehouseState: { type: String, default: "" },
+      warehousePincode: { type: String, default: "" },
     },
 
     communication: {
@@ -102,15 +144,6 @@ const settingSchema = new mongoose.Schema(
       },
       bgColor: { type: String, default: "#ffffff" },
       textColor: { type: String, default: "#ef4444" },
-      linkEnabled: { type: Boolean, default: false },
-      linkUrl: { type: String, default: "" },
-    },
-
-    highlightsBar: {
-      enabled: { type: Boolean, default: false },
-      text: { type: String, default: "" },
-      bgColor: { type: String, default: "#121045" },
-      textColor: { type: String, default: "#ffffff" },
       linkEnabled: { type: Boolean, default: false },
       linkUrl: { type: String, default: "" },
     },

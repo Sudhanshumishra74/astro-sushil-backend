@@ -41,5 +41,17 @@ export const getRateFor = async (currency) => {
     return 1;
   }
 
-  return Number(rates[key] || 0);
+  // A missing/renamed currency key used to fall through as `0`, and
+  // createOrder's `Number(await getRateFor(...)) || 1` turned that into a
+  // silent 1:1 INR rate — an order priced in a foreign currency but charged
+  // as if 1 unit of it equalled 1 INR, with nothing on the order
+  // distinguishing that from a genuinely INR-priced one. Throwing here
+  // means a bad/missing rate fails the order cleanly instead of
+  // mispricing it.
+  const rate = Number(rates[key]);
+  if (!rate || !Number.isFinite(rate) || rate <= 0) {
+    throw new Error(`No exchange rate available for currency "${key}"`);
+  }
+
+  return rate;
 };

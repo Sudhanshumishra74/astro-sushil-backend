@@ -29,12 +29,16 @@ export const matchMakingSchema = z.object({
       male_dob: z.string().min(1),
       male_hour: z.coerce.number().min(0).max(23),
       male_min: z.coerce.number().min(0).max(59),
+      // Display-only — not part of the astrology vendor's own request shape,
+      // stripped back out in getMatchMaking before the vendor call.
+      male_name: z.string().optional(),
 
       female_lat: z.coerce.number().min(-90).max(90),
       female_long: z.coerce.number().min(-180).max(180),
       female_dob: z.string().min(1),
       female_hour: z.coerce.number().min(0).max(23),
       female_min: z.coerce.number().min(0).max(59),
+      female_name: z.string().optional(),
 
       label: z.string().min(4),
     })

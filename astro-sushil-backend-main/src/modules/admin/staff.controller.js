@@ -3,6 +3,7 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiError } from "../../utils/ApiError.js";
 import { Admin } from "./admin.modal.js";
 import { Role } from "../role/role.model.js";
+import { diffFields, logActivity } from "../AuditLog/auditLog.service.js";
 
 const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const STAFF_PROJECTION = "-password -refreshToken";
@@ -114,6 +115,15 @@ export const createStaff = asyncHandler(async (req, res) => {
 
   await staff.save();
 
+  await logActivity({
+    admin: req.user,
+    action: "staff.create",
+    targetType: "Staff",
+    targetId: staff._id,
+    targetLabel: staff.fullName,
+    changes: [],
+  });
+
   const populated = await Admin.findById(staff._id)
     .select(STAFF_PROJECTION)
     .populate("role", "name slug isSuperAdmin status");
@@ -132,8 +142,30 @@ export const updateStaff = asyncHandler(async (req, res) => {
 
   assertCanTouchSuperAdmin(req, staff);
 
+  const beforeSnapshot = staff.toObject();
+
   Object.assign(staff, req.validatedData);
   await staff.save();
+
+  await logActivity({
+    admin: req.user,
+    action: "staff.update",
+    targetType: "Staff",
+    targetId: staff._id,
+    targetLabel: staff.fullName,
+    changes: diffFields(beforeSnapshot, staff.toObject(), [
+      "fullName",
+      "phoneNumber",
+      "designation",
+      "website",
+      "portfolioLink",
+      "address",
+      "city",
+      "state",
+      "postalCode",
+    ]),
+    skipIfNoChanges: true,
+  });
 
   res.json(new ApiResponse(200, staff, "Staff account updated successfully"));
 });
@@ -159,8 +191,19 @@ export const updateStaffRole = asyncHandler(async (req, res) => {
 
   assertCanAssignRole(req, role);
 
+  const beforeSnapshot = { role: staff.role?._id ?? staff.role };
   staff.role = role._id;
   await staff.save();
+
+  await logActivity({
+    admin: req.user,
+    action: "staff.updateRole",
+    targetType: "Staff",
+    targetId: staff._id,
+    targetLabel: staff.fullName,
+    changes: diffFields(beforeSnapshot, { role: staff.role }, ["role"]),
+    skipIfNoChanges: true,
+  });
 
   const populated = await Admin.findById(staff._id)
     .select(STAFF_PROJECTION)
@@ -184,9 +227,20 @@ export const updateStaffStatus = asyncHandler(async (req, res) => {
   assertCanTouchSuperAdmin(req, staff);
   if (status === "SUSPENDED") await assertNotLastSuperAdmin(staff);
 
+  const beforeStatus = staff.status;
   staff.status = status;
   if (status === "SUSPENDED") staff.refreshToken = null;
   await staff.save();
+
+  await logActivity({
+    admin: req.user,
+    action: "staff.updateStatus",
+    targetType: "Staff",
+    targetId: staff._id,
+    targetLabel: staff.fullName,
+    changes: diffFields({ status: beforeStatus }, { status: staff.status }, ["status"]),
+    skipIfNoChanges: true,
+  });
 
   res.json(new ApiResponse(200, staff, `Staff account ${status === "ACTIVE" ? "activated" : "suspended"}`));
 });
@@ -206,6 +260,15 @@ export const resetStaffPassword = asyncHandler(async (req, res) => {
   staff.refreshToken = null;
   await staff.save();
 
+  await logActivity({
+    admin: req.user,
+    action: "staff.resetPassword",
+    targetType: "Staff",
+    targetId: staff._id,
+    targetLabel: staff.fullName,
+    changes: [],
+  });
+
   res.json(new ApiResponse(200, null, "Password reset successfully"));
 });
 
@@ -223,10 +286,21 @@ export const deleteStaff = asyncHandler(async (req, res) => {
   assertCanTouchSuperAdmin(req, staff);
   await assertNotLastSuperAdmin(staff);
 
+  const staffLabel = staff.fullName;
+
   staff.isDeleted = true;
   staff.status = "SUSPENDED";
   staff.refreshToken = null;
   await staff.save();
+
+  await logActivity({
+    admin: req.user,
+    action: "staff.delete",
+    targetType: "Staff",
+    targetId: staff._id,
+    targetLabel: staffLabel,
+    changes: [],
+  });
 
   res.json(new ApiResponse(200, null, "Staff account deleted successfully"));
 });

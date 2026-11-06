@@ -12,3 +12,16 @@ export const createRazorpayOrder = async ({ amount, currency, receipt }) => {
     receipt,
   });
 };
+
+/**
+ * Issues a refund against an already-captured Razorpay payment. Amount is
+ * in the order's display currency (e.g. rupees), converted to paise here —
+ * callers should never pre-multiply by 100.
+ */
+export const refundRazorpayPayment = async ({ paymentId, amount, notes }) => {
+  return razorpay.payments.refund(paymentId, {
+    amount: Math.round(Number(amount) * 100),
+    speed: "normal",
+    notes,
+  });
+};
