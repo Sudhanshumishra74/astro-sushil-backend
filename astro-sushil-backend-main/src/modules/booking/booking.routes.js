@@ -11,6 +11,7 @@ import {
   getBookingById,
   getBookingsByDate,
   getMyBookings,
+  recommendProducts,
   rescheduleBooking,
   updateBookingPlan,
   verifyConsultationPayment,
@@ -34,6 +35,12 @@ router.get("/bookings", adminVerifyJWT, authorize("bookings.view"), getAllBookin
 router.get("/bookings/date", adminVerifyJWT, authorize("bookings.view"), getBookingsByDate);
 router.get("/bookings/:id", adminVerifyJWT, authorize("bookings.view"), getBookingById);
 router.delete("/bookings/:id", adminVerifyJWT, authorize("bookings.delete"), deleteBooking);
+router.patch(
+  "/bookings/:bookingId/recommendations",
+  adminVerifyJWT,
+  authorize("bookings.edit"),
+  recommendProducts,
+);
 router.get(
   "/my-bookings/:bookingId/invoice",
   verifyToken,

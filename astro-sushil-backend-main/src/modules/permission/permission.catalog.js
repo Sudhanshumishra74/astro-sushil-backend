@@ -36,6 +36,8 @@ export const PERMISSION_CATALOG = [
   { module: "consultations", moduleLabel: "Consultations", group: "Catalog", actions: ["view", "create", "edit", "delete"] },
 
   { module: "orders", moduleLabel: "Orders", group: "Sales", actions: ["view", "edit", "export"] },
+  { module: "shipments", moduleLabel: "Shipments", group: "Sales", actions: ["view", "edit"] },
+  { module: "returns", moduleLabel: "Returns", group: "Sales", actions: ["view", "edit"] },
   { module: "reportOrders", moduleLabel: "Report Orders", group: "Sales", actions: ["view", "edit"] },
   { module: "transactions", moduleLabel: "Transactions", group: "Sales", actions: ["view", "export"] },
   { module: "gstReport", moduleLabel: "GST Report", group: "Sales", actions: ["view", "export"] },
@@ -43,7 +45,7 @@ export const PERMISSION_CATALOG = [
   { module: "coupons", moduleLabel: "Coupons", group: "Sales", actions: ["view", "create", "edit", "delete"] },
 
   { module: "customers", moduleLabel: "Customers", group: "Users", actions: ["view", "edit", "delete"] },
-  { module: "contacts", moduleLabel: "Contacts", group: "Users", actions: ["view", "edit", "delete"] },
+  { module: "contacts", moduleLabel: "Contacts", group: "Users", actions: ["view", "delete"] },
 
   { module: "blogs", moduleLabel: "Blogs", group: "Content", actions: ["view", "create", "edit", "delete"] },
   { module: "faqs", moduleLabel: "FAQs", group: "Content", actions: ["view", "create", "edit", "delete"] },
@@ -60,6 +62,7 @@ export const PERMISSION_CATALOG = [
   { module: "roles", moduleLabel: "Roles", group: "Administration", actions: ["view", "create", "edit", "delete"] },
   { module: "permissions", moduleLabel: "Permissions", group: "Administration", actions: ["view"] },
   { module: "staff", moduleLabel: "Staff", group: "Administration", actions: ["view", "create", "edit", "delete"] },
+  { module: "activityLog", moduleLabel: "Activity Log", group: "Administration", actions: ["view"] },
 ];
 
 /** Flattens the catalog into individual permission records ({name, module, moduleLabel, action, label, group, sortOrder}). */

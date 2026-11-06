@@ -24,7 +24,20 @@ const transactionSchema = new mongoose.Schema(
     },
     transactionType: {
       type: String,
-      enum: ["order", "consultation", "report"],
+      enum: ["order", "consultation", "report", "refund"],
+    },
+
+    // Set only on transactionType: "refund" — points back at the original
+    // payment Transaction this refund is against.
+    refundOf: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Transaction",
+      default: null,
+    },
+
+    razorpayRefundId: {
+      type: String,
+      default: null,
     },
     amount: {
       type: Number,

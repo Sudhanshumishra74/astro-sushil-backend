@@ -5,6 +5,23 @@ import { asyncHandler } from "../../utils/asyncHandler.js";
 import { Blog } from "./Blog.model.js";
 
 import { blogSchemaZod } from "./blog.validation.js";
+import { diffFields, logActivity } from "../AuditLog/auditLog.service.js";
+
+const BLOG_AUDIT_FIELDS = [
+  "title",
+  "slug",
+  "shortDescription",
+  "content",
+  "category",
+  "tags",
+  "status",
+  "isFeatured",
+  "publishedAt",
+  "seo",
+  "author",
+  "thumbnail",
+  "images",
+];
 
 
 const safeJSON = (value, fallback) => {
@@ -59,6 +76,15 @@ export const createBlog = asyncHandler(async (req, res) => {
     thumbnail,
     publishedAt:
       parsed.data.status === "published" ? new Date() : null,
+  });
+
+  await logActivity({
+    admin: req.user,
+    action: "blog.create",
+    targetType: "Blog",
+    targetId: blog._id,
+    targetLabel: blog?.title,
+    changes: [],
   });
 
   return res
@@ -124,6 +150,8 @@ export const updateBlog = asyncHandler(async (req, res) => {
     };
   }
 
+  const beforeSnapshot = blog.toObject();
+
   Object.assign(blog, parsed.data);
 
   if (parsed.data.status === "published" && !blog.publishedAt) {
@@ -131,6 +159,16 @@ export const updateBlog = asyncHandler(async (req, res) => {
   }
 
   await blog.save();
+
+  await logActivity({
+    admin: req.user,
+    action: "blog.update",
+    targetType: "Blog",
+    targetId: blog._id,
+    targetLabel: blog?.title,
+    changes: diffFields(beforeSnapshot, blog.toObject(), BLOG_AUDIT_FIELDS),
+    skipIfNoChanges: true,
+  });
 
   return res.json(new ApiResponse(200, blog, "Blog updated"));
 });
@@ -183,7 +221,19 @@ export const deleteBlog = asyncHandler(async (req, res) => {
     await deleteFile(blog.thumbnail.key);
   }
 
+  const blogLabel = blog?.title;
+  const blogId = blog._id;
+
   await blog.deleteOne();
+
+  await logActivity({
+    admin: req.user,
+    action: "blog.delete",
+    targetType: "Blog",
+    targetId: blogId,
+    targetLabel: blogLabel,
+    changes: [],
+  });
 
   return res.json(new ApiResponse(200, null, "Blog deleted"));
 });

@@ -1,5 +1,4 @@
 import crypto from "crypto";
-import mongoose from "mongoose";
 import Report from "./report.model.js";
 import ReportOrder from "./reportOrder.model.js";
 import { Transaction } from "../Transaction/Transaction.model.js";
@@ -10,6 +9,7 @@ import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { generateReportInvoiceTemplate } from "../../utils/generateReportInvoiceTemplate.js";
+import { ensureSequenceNumber, formatInvoiceNumber } from "../../utils/invoiceSequence.js";
 
 import {
   createReportSchema,
@@ -25,8 +25,7 @@ import { REPORT_CONFIG } from "../../utils/constants.js";
 import { normalizeDate } from "../../utils/time.js";
 import { createRazorpayOrder } from "../../utils/razorpay.js";
 import { computeGst } from "../../common/taxEngine.js";
-import { findInvoiceForPdf } from "../../service/invoicePdfService.js";
-import { allocateInvoiceInTransaction } from "../../service/invoiceAllocator.js";
+import { logActivity } from "../AuditLog/auditLog.service.js";
 
 const resolveReportGst = (report) => computeGst(report.salePrice, report.gst);
 
@@ -80,6 +79,15 @@ export const addReport = asyncHandler(async (req, res) => {
   console.log(parsed.data);
 
   const report = await Report.create(parsed.data);
+
+  await logActivity({
+    admin: req.user,
+    action: "pdfReport.create",
+    targetType: "Report",
+    targetId: report._id,
+    targetLabel: report?.name,
+    changes: [],
+  });
 
   return res.json(new ApiResponse(201, report, "Report created successfully"));
 });
@@ -173,6 +181,15 @@ export const updateReport = asyncHandler(async (req, res) => {
   Object.assign(report, parsed.data);
   await report.save();
 
+  await logActivity({
+    admin: req.user,
+    action: "pdfReport.update",
+    targetType: "Report",
+    targetId: report._id,
+    targetLabel: report?.name,
+    changes: [],
+  });
+
   return res.json(
     new ApiResponse(200, report, "Report updated successfully"),
   );
@@ -185,7 +202,18 @@ export const deleteReport = asyncHandler(async (req, res) => {
     throw new ApiError(404, "Report not found");
   }
 
+  const title = report.name;
+
   await report.deleteOne();
+
+  await logActivity({
+    admin: req.user,
+    action: "pdfReport.delete",
+    targetType: "Report",
+    targetId: report._id,
+    targetLabel: title,
+    changes: [],
+  });
 
   return res.json(new ApiResponse(200, null, "Report deleted successfully"));
 });
@@ -489,59 +517,23 @@ export const verifyReportPayment = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Payment verification failed");
   }
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  let claimed;
-  try {
-    const transaction = await Transaction.findOne({
-      razorpayOrderId: razorpay_order_id,
-    })
-      .session(session)
-      .lean();
-
-    if (!transaction) {
-      throw new ApiError(404, "Transaction not found");
-    }
-
-    // Atomic claim — only client or webhook runs report generation, never both
-    claimed = await ReportOrder.findOneAndUpdate(
-      { razorpayOrderId: razorpay_order_id, paymentStatus: { $ne: "paid" } },
-      {
-        $set: {
-          paymentStatus: "paid",
-          razorpayPaymentId: razorpay_payment_id,
-          razorpaySignature: razorpay_signature,
-        },
+  // Atomic claim — only client or webhook runs report generation, never both
+  const claimed = await ReportOrder.findOneAndUpdate(
+    { razorpayOrderId: razorpay_order_id, paymentStatus: { $ne: "paid" } },
+    {
+      $set: {
+        paymentStatus: "paid",
+        razorpayPaymentId: razorpay_payment_id,
+        razorpaySignature: razorpay_signature,
       },
-      { new: true, session },
-    ).populate(["reportId", "userId"]);
+    },
+    { returnDocument: "after" },
+  ).populate(["reportId", "userId"]);
 
-    if (claimed) {
-      const updatedTransaction = await Transaction.findOneAndUpdate(
-        { _id: transaction._id },
-        { $set: { status: "success", transactionId: razorpay_payment_id } },
-        { new: true, session },
-      );
-      if (!updatedTransaction) {
-        throw new ApiError(404, "Transaction not found");
-      }
-
-      await allocateInvoiceInTransaction({
-        sourceType: "report",
-        sourceId: claimed._id,
-        transactionId: updatedTransaction._id,
-        session,
-      });
-    }
-
-    await session.commitTransaction();
-  } catch (err) {
-    await session.abortTransaction();
-    throw err;
-  } finally {
-    await session.endSession();
-  }
+  await Transaction.findOneAndUpdate(
+    { razorpayOrderId: razorpay_order_id },
+    { $set: { status: "success", transactionId: razorpay_payment_id } },
+  );
 
   if (!claimed) {
     // Webhook already claimed and triggered report generation
@@ -592,51 +584,24 @@ export const downloadReportInvoice = asyncHandler(async (req, res) => {
   const order = await ReportOrder.findOne({
     _id: orderId,
     userId: req.user._id,
-  })
-    .populate("reportId")
-    .lean();
+  }).populate("reportId");
 
   if (!order) {
     throw new ApiError(404, "Order not found");
   }
 
-  if (order.paymentStatus !== "paid") {
-    throw new ApiError(409, "Report payment is not successful");
-  }
+  await ensureSequenceNumber(ReportOrder, order, {
+    field: "invoiceNumber",
+    counterKey: "invoice",
+    formatter: formatInvoiceNumber,
+  });
 
-  const transactionQuery = {
-    report: order._id,
-    transactionType: "report",
-    status: "success",
-  };
-  if (order.razorpayOrderId) {
-    transactionQuery.razorpayOrderId = order.razorpayOrderId;
-  }
-  const transactions = await Transaction.find(transactionQuery).lean();
-  if (transactions.length !== 1) {
-    throw new ApiError(
-      409,
-      transactions.length > 1
-        ? "Report has ambiguous successful transactions"
-        : "Successful Report transaction not found",
-    );
-  }
-  const transaction = transactions[0];
+  const transaction = await Transaction.findOne({ report: order._id }).lean();
   const user = await User.findById(req.user._id).select(
     "firstName lastName email phoneNumber",
   );
-  const invoice = await findInvoiceForPdf({
-    sourceType: "report",
-    sourceId: order._id,
-    transactionId: transaction?._id,
-  });
 
-  const html = generateReportInvoiceTemplate({
-    order,
-    transaction,
-    user,
-    invoiceNumber: invoice?.invoiceNumber,
-  });
+  const html = generateReportInvoiceTemplate({ order, transaction, user });
 
   const browser = await puppeteer.connect({
     browserWSEndpoint: process.env.PDF_SERVER,
@@ -657,6 +622,9 @@ export const downloadReportInvoice = asyncHandler(async (req, res) => {
   }
 
   res.setHeader("Content-Type", "application/pdf");
+  // Never let the browser reuse a cached response for this URL — see the
+  // matching comment in order.controller.js's downloadInvoice.
+  res.setHeader("Cache-Control", "no-store");
   res.setHeader(
     "Content-Disposition",
     `attachment; filename=report-invoice-${orderId}.pdf`,

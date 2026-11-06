@@ -5,6 +5,7 @@ import { ApiResponse } from "../../utils/ApiResponse.js";
 import { ApiError } from "../../utils/ApiError.js";
 import { uploadFile, deleteFile } from "../../service/UploadAws.js";
 import { getCache, setCache, delCache } from "../../utils/cache.js";
+import { diffFields, logActivity } from "../AuditLog/auditLog.service.js";
 
 // One key per page — deleted as a batch on any banner mutation.
 const BANNER_CACHE_KEYS = [
@@ -34,6 +35,15 @@ export const createBanner = asyncHandler(async (req, res) => {
   const banner = await Banner.create(data);
 
   await invalidateBannerCache();
+
+  await logActivity({
+    admin: req.user,
+    action: "banner.create",
+    targetType: "Banner",
+    targetId: banner._id,
+    targetLabel: banner.title || banner.page || String(banner._id),
+    changes: [],
+  });
 
   res.json(new ApiResponse(201, banner, "Banner created successfully"));
 });
@@ -73,6 +83,8 @@ export const updateBanner = asyncHandler(async (req, res) => {
   const banner = await Banner.findById(bannerId);
   if (!banner) throw new ApiError(404, "Banner not found");
 
+  const beforeSnapshot = banner.toObject();
+
   if (req.files?.image?.[0]) {
     if (banner.imageKey) {
       await deleteFile(banner.imageKey);
@@ -88,11 +100,21 @@ export const updateBanner = asyncHandler(async (req, res) => {
   }
 
   const updated = await Banner.findByIdAndUpdate(bannerId, updateData, {
-    new: true,
+    returnDocument: "after",
     runValidators: true,
   });
 
   await invalidateBannerCache();
+
+  await logActivity({
+    admin: req.user,
+    action: "banner.update",
+    targetType: "Banner",
+    targetId: banner._id,
+    targetLabel: updated?.title || beforeSnapshot.title || String(banner._id),
+    changes: diffFields(beforeSnapshot, updated?.toObject?.() ?? updated, Object.keys(updateData)),
+    skipIfNoChanges: true,
+  });
 
   res.json(new ApiResponse(200, updated, "Banner updated successfully"));
 });
@@ -106,9 +128,21 @@ export const deleteBanner = asyncHandler(async (req, res) => {
     await deleteFile(banner.imageKey);
   }
 
+  const deletedLabel = banner.title || banner.page || String(banner._id);
+  const deletedId = banner._id;
+
   await banner.deleteOne();
 
   await invalidateBannerCache();
+
+  await logActivity({
+    admin: req.user,
+    action: "banner.delete",
+    targetType: "Banner",
+    targetId: deletedId,
+    targetLabel: deletedLabel,
+    changes: [],
+  });
 
   res.json(new ApiResponse(200, null, "Banner deleted successfully"));
 });
@@ -118,10 +152,22 @@ export const toggleBannerStatus = asyncHandler(async (req, res) => {
 
   if (!banner) throw new ApiError(404, "Banner not found");
 
+  const wasActive = banner.isActive;
+
   banner.isActive = !banner.isActive;
   await banner.save();
 
   await invalidateBannerCache();
+
+  await logActivity({
+    admin: req.user,
+    action: "banner.toggle_status",
+    targetType: "Banner",
+    targetId: banner._id,
+    targetLabel: banner.title || banner.page || String(banner._id),
+    changes: diffFields({ isActive: wasActive }, { isActive: banner.isActive }, ["isActive"]),
+    skipIfNoChanges: true,
+  });
 
   res.json(
     new ApiResponse(

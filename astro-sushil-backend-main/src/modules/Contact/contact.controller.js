@@ -1,10 +1,11 @@
 import { Contact } from "./contact.model.js";
-import { contactSchemaZod, contactRemarksSchemaZod } from "./contact.validation.js";
+import { contactSchemaZod } from "./contact.validation.js";
 
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiError } from "../../utils/ApiError.js";
 import sendEmail from "../../service/sendEmail.js";
+import { logActivity } from "../AuditLog/auditLog.service.js";
 
 export const submitContact = asyncHandler(async (req, res) => {
   const result = contactSchemaZod.safeParse(req.body);
@@ -97,35 +98,21 @@ export const getContactById = asyncHandler(async (req, res) => {
   return res.status(200).json(new ApiResponse(200, contact));
 });
 
-export const updateContactRemarks = asyncHandler(async (req, res) => {
-  const result = contactRemarksSchemaZod.safeParse(req.body);
-
-  if (!result.success) {
-    const errors = result.error.issues.map((e) => e.message);
-    throw new ApiError(400, errors.join(", "));
-  }
-
-  const contact = await Contact.findByIdAndUpdate(
-    req.params.id,
-    { remarks: result.data.remarks },
-    { new: true },
-  );
-
-  if (!contact) {
-    throw new ApiError(404, "Contact not found");
-  }
-
-  return res
-    .status(200)
-    .json(new ApiResponse(200, contact, "Remarks updated successfully"));
-});
-
 export const deleteContact = asyncHandler(async (req, res) => {
   const contact = await Contact.findByIdAndDelete(req.params.id);
 
   if (!contact) {
     throw new ApiError(404, "Contact not found");
   }
+
+  await logActivity({
+    admin: req.user,
+    action: "contact.delete",
+    targetType: "Contact",
+    targetId: contact._id,
+    targetLabel: contact.name || contact.email,
+    changes: [],
+  });
 
   return res
     .status(200)

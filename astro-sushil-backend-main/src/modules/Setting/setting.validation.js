@@ -55,6 +55,8 @@ export const settingSchemaZod = z.object({
       deliveryChargePerKM: z.coerce.number().optional(),
       maxCODLimit: z.coerce.number().optional(),
       supportedAreas: z.array(z.string()).optional(),
+      chargeSelfFulfilled: z.coerce.boolean().optional(),
+      displayMode: z.enum(["merged", "separate"]).optional(),
     })
     .optional(),
 
@@ -62,6 +64,7 @@ export const settingSchemaZod = z.object({
     .object({
       lowStockWarning: z.coerce.number().optional(),
       maxQuantityInCart: z.coerce.number().optional(),
+      certificatesEnabled: z.coerce.boolean().optional(),
     })
     .optional(),
 
@@ -76,8 +79,26 @@ export const settingSchemaZod = z.object({
   order: z
     .object({
       autoCancelUnpaidMinutes: z.coerce.number().optional(),
+      cancellationWindowHours: z.coerce.number().optional(),
       returnPolicyDays: z.coerce.number().optional(),
       maxOrderValue: z.coerce.number().optional(),
+    })
+    .optional(),
+
+  shiprocket: z
+    .object({
+      email: z.string().email().optional().or(z.literal("")),
+      password: z.string().optional(),
+      webhookToken: z.string().optional(),
+      pickupLocation: z.string().optional(),
+      pickupPincode: z.string().optional(),
+      warehouseName: z.string().optional(),
+      warehouseEmail: z.string().email().optional().or(z.literal("")),
+      warehousePhone: z.string().optional(),
+      warehouseAddress: z.string().optional(),
+      warehouseCity: z.string().optional(),
+      warehouseState: z.string().optional(),
+      warehousePincode: z.string().optional(),
     })
     .optional(),
 
@@ -123,27 +144,6 @@ export const settingSchemaZod = z.object({
     .optional(),
 
   topBar: z
-    .object({
-      enabled: z.coerce.boolean().optional(),
-      text: z.string().optional(),
-      bgColor: z
-        .string()
-        .regex(/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/)
-        .optional()
-        .or(z.literal("")),
-      textColor: z
-        .string()
-        .regex(/^#([0-9A-Fa-f]{3}|[0-9A-Fa-f]{6})$/)
-        .optional()
-        .or(z.literal("")),
-      linkEnabled: z.coerce.boolean().optional(),
-      // Internal route (e.g. "/free-online-kundli") or a full external URL —
-      // not restricted to z.string().url() since relative paths are valid.
-      linkUrl: z.string().optional(),
-    })
-    .optional(),
-
-  highlightsBar: z
     .object({
       enabled: z.coerce.boolean().optional(),
       text: z.string().optional(),

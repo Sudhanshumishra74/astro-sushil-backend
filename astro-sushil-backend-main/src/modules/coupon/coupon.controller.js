@@ -2,6 +2,7 @@ import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { ApiError } from "../../utils/ApiError.js";
 import { Coupon } from "./coupon.model.js";
+import { diffFields, logActivity } from "../AuditLog/auditLog.service.js";
 
 export const createCoupon = asyncHandler(async (req, res) => {
   const data = req.validatedData;
@@ -24,6 +25,15 @@ export const createCoupon = asyncHandler(async (req, res) => {
   const coupon = await Coupon.create({
     ...data,
     code: data.code.toUpperCase(),
+  });
+
+  await logActivity({
+    admin: req.user,
+    action: "coupon.create",
+    targetType: "Coupon",
+    targetId: coupon._id,
+    targetLabel: coupon?.code,
+    changes: [],
   });
 
   return res.status(201).json(new ApiResponse(201, coupon, "Coupon created"));
@@ -62,16 +72,28 @@ export const updateCoupon = asyncHandler(async (req, res) => {
     throw new ApiError(400, "Assigned users required for individual coupon");
   }
 
+  const before = await Coupon.findById(couponId).lean();
+
   const updatedCoupon = await Coupon.findByIdAndUpdate(
     couponId,
     {
       $set: data,
     },
     {
-      new: true,
+      returnDocument: "after",
       runValidators: true,
     },
   );
+
+  await logActivity({
+    admin: req.user,
+    action: "coupon.update",
+    targetType: "Coupon",
+    targetId: couponId,
+    targetLabel: updatedCoupon?.code ?? before?.code,
+    changes: diffFields(before, updatedCoupon?.toObject?.() ?? updatedCoupon, Object.keys(req.body)),
+    skipIfNoChanges: true,
+  });
 
   res.json(new ApiResponse(200, updatedCoupon, "Coupon updated successfully"));
 });
@@ -84,7 +106,18 @@ export const deleteCoupon = asyncHandler(async (req, res) => {
     throw new ApiError(404, "Coupon not found");
   }
 
+  const deletedCode = coupon?.code;
+
   await Coupon.findByIdAndDelete(couponId);
+
+  await logActivity({
+    admin: req.user,
+    action: "coupon.delete",
+    targetType: "Coupon",
+    targetId: couponId,
+    targetLabel: deletedCode,
+    changes: [],
+  });
 
   res.json(new ApiResponse(200, null, "Coupon deleted successfully"));
 });
@@ -97,9 +130,21 @@ export const toggleCouponStatus = asyncHandler(async (req, res) => {
     throw new ApiError(404, "Coupon not found");
   }
 
+  const wasActive = coupon.isActive;
+
   coupon.isActive = !coupon.isActive;
 
   await coupon.save();
+
+  await logActivity({
+    admin: req.user,
+    action: "coupon.toggle_status",
+    targetType: "Coupon",
+    targetId: coupon._id,
+    targetLabel: coupon?.code,
+    changes: diffFields({ isActive: wasActive }, { isActive: coupon.isActive }, ["isActive"]),
+    skipIfNoChanges: true,
+  });
 
   res.json(
     new ApiResponse(

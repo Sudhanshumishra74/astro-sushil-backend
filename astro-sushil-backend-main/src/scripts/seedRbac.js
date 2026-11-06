@@ -30,7 +30,7 @@ async function upsertPermissions() {
     const result = await Permission.findOneAndUpdate(
       { name: record.name },
       { $set: record },
-      { upsert: true, new: true, setDefaultsOnInsert: true, rawResult: true },
+      { upsert: true, returnDocument: "after", setDefaultsOnInsert: true, rawResult: true },
     );
     if (result.lastErrorObject?.upserted) created += 1;
     else updated += 1;
@@ -69,7 +69,7 @@ async function upsertSuperAdminRole(allPermissions) {
         permissions: allPermissionIds,
       },
     },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
 
   console.log(`Super Admin role: ${role._id} (${allPermissionIds.length} permissions).`);
@@ -95,7 +95,7 @@ async function upsertAdminRole(allPermissions) {
 
   const role = await Role.findOneAndUpdate({ slug: "admin" }, update, {
     upsert: true,
-    new: true,
+    returnDocument: "after",
     setDefaultsOnInsert: true,
   });
 

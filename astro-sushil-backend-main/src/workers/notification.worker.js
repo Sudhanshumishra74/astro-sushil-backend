@@ -9,6 +9,10 @@ import {
   sendConsultationReminderWhatsapp,
   sendConsultationRescheduleWhatsapp,
   sendBookingUpdatedWhatsapp,
+  sendReturnStatusWhatsapp,
+  sendRefundProcessedWhatsapp,
+  sendAbandonedCartWhatsapp,
+  sendRecommendedProductsWhatsapp,
 } from "../service/sendWhatsapp.js";
 import { sendSmsLane } from "../service/smslane.js";
 import { smsTemplates } from "../utils/smsTemplates.js";
@@ -17,9 +21,16 @@ import ReportOrder from "../modules/Reports/reportOrder.model.js";
 import { Booking } from "../modules/booking/booking.model.js";
 import { redisConnection } from "../config/redis.js";
 import { ApiError } from "../utils/ApiError.js";
-import { emailTemplates } from "../utils/emailTemplates.js";
+import {
+  emailTemplates,
+  RETURN_STATUS_META,
+  DEFAULT_RETURN_STATUS_META,
+} from "../utils/emailTemplates.js";
 import { Order } from "../modules/Order/order.model.js";
 import { Transaction } from "../modules/Transaction/Transaction.model.js";
+import Cart from "../modules/cart/cart.modal.js";
+import { Product } from "../modules/products/product.modal.js";
+import Setting from "../modules/Setting/Setting.model.js";
 
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
 const REPORT_SEND_CRON = process.env.REPORT_SEND_CRON || "0 * * * *"; // every hour
@@ -30,6 +41,11 @@ const CONSULTATION_REMINDER_CRON =
   process.env.CONSULTATION_REMINDER_CRON || "0 8 * * *"; // every day at 08:00 IST
 const REMOVE_PENDING_RECORDS_CRON =
   process.env.REMOVE_PENDING_RECORDS_CRON || "0 * * * *"; // every hour
+const ABANDONED_CART_CRON = process.env.ABANDONED_CART_CRON || "0 * * * *"; // every hour
+const ABANDONED_CART_HOURS = process.env.ABANDONED_CART_HOURS
+  ? Number(process.env.ABANDONED_CART_HOURS)
+  : 2;
+const LOW_STOCK_CHECK_CRON = process.env.LOW_STOCK_CHECK_CRON || "0 * * * *"; // every hour
 
 const schedulePendingReportNotifications = async () => {
   try {
@@ -129,6 +145,146 @@ const schedulePendingConsultationReminders = async () => {
   }
 };
 
+const scheduleAbandonedCartReminders = async () => {
+  try {
+    const cutoff = new Date(Date.now() - ABANDONED_CART_HOURS * 60 * 60 * 1000);
+
+    const carts = await Cart.find({
+      "items.0": { $exists: true },
+      updatedAt: { $lte: cutoff },
+      abandonedCartReminderSentAt: null,
+    })
+      .populate("user", "firstName email phoneNumber")
+      .select("items totalAmount user");
+
+    console.log(`[abandoned-cart] cron tick — cutoff ${cutoff.toISOString()}, ${carts.length} eligible cart(s)`);
+
+    if (!carts || carts.length === 0) {
+      return;
+    }
+
+    for (const cart of carts) {
+      if (!cart.user?.email && !cart.user?.phoneNumber) continue;
+
+      await notificationQueue.add(
+        "abandoned-cart-reminder",
+        {
+          cartId: cart._id.toString(),
+          userEmail: cart.user.email,
+          userName: cart.user.firstName || "there",
+          userPhone: cart.user.phoneNumber,
+          items: cart.items.map((item) => ({
+            name: item.name,
+            quantity: item.quantity,
+            price: item.price,
+          })),
+          cartTotal: cart.totalAmount,
+        },
+        {
+          removeOnComplete: 100,
+          removeOnFail: 100,
+          attempts: 3,
+          backoff: {
+            type: "exponential",
+            delay: 3000,
+          },
+        },
+      );
+    }
+  } catch (err) {
+    console.error("Abandoned cart scheduler error:", err);
+  }
+};
+
+// Sweeps for products/variants/sub-variants at or below the admin-configured
+// Setting.product.lowStockWarning threshold, rather than hooking into every
+// place stock can change (order placement, cancellation restock, returns,
+// manual admin edits) — a periodic sweep catches all of them uniformly.
+// lowStockNotifiedAt (product/variant/subVariant level, product.modal.js)
+// dedupes so the same low-stock item doesn't re-alert on every tick; it's
+// cleared below once stock is topped back up above the threshold, so a
+// restock re-arms the alert for the next dip.
+const scheduleLowStockAlerts = async () => {
+  try {
+    const settings = await Setting.findOne().select("product.lowStockWarning").lean();
+    const threshold = settings?.product?.lowStockWarning ?? 5;
+
+    await Product.updateMany(
+      { hasVariants: false, stock: { $gt: threshold }, lowStockNotifiedAt: { $ne: null } },
+      { $set: { lowStockNotifiedAt: null } },
+    );
+    await Product.updateMany(
+      { hasVariants: true, "variants.lowStockNotifiedAt": { $ne: null } },
+      { $set: { "variants.$[v].lowStockNotifiedAt": null } },
+      { arrayFilters: [{ "v.stock": { $gt: threshold }, "v.lowStockNotifiedAt": { $ne: null } }] },
+    );
+    await Product.updateMany(
+      { hasVariants: true, "variants.subVariants.lowStockNotifiedAt": { $ne: null } },
+      { $set: { "variants.$[].subVariants.$[sv].lowStockNotifiedAt": null } },
+      { arrayFilters: [{ "sv.stock": { $gt: threshold }, "sv.lowStockNotifiedAt": { $ne: null } }] },
+    );
+
+    const items = [];
+
+    const simpleProducts = await Product.find({
+      type: "physical",
+      isPublished: true,
+      hasVariants: false,
+      stock: { $lte: threshold },
+      lowStockNotifiedAt: null,
+    }).select("name sku stock");
+
+    for (const p of simpleProducts) {
+      items.push({ productId: p._id.toString(), name: p.name, sku: p.sku, stock: p.stock });
+    }
+
+    const variantProducts = await Product.find({
+      type: "physical",
+      isPublished: true,
+      hasVariants: true,
+      $or: [
+        { "variants.stock": { $lte: threshold }, "variants.lowStockNotifiedAt": null },
+        { "variants.subVariants.stock": { $lte: threshold }, "variants.subVariants.lowStockNotifiedAt": null },
+      ],
+    }).select("name variants");
+
+    for (const p of variantProducts) {
+      for (const v of p.variants || []) {
+        if (v.subVariants?.length) {
+          for (const sv of v.subVariants) {
+            if (sv.stock <= threshold && !sv.lowStockNotifiedAt) {
+              items.push({
+                productId: p._id.toString(),
+                variantId: v._id.toString(),
+                subVariantId: sv._id.toString(),
+                name: p.name,
+                variantLabel: `${v.name}: ${v.value} / ${sv.name}: ${sv.value}`,
+                stock: sv.stock,
+              });
+            }
+          }
+        } else if (v.stock <= threshold && !v.lowStockNotifiedAt) {
+          items.push({
+            productId: p._id.toString(),
+            variantId: v._id.toString(),
+            name: p.name,
+            variantLabel: `${v.name}: ${v.value}`,
+            stock: v.stock,
+          });
+        }
+      }
+    }
+
+    if (!items.length) return;
+
+    console.log(`[low-stock] cron tick — ${items.length} item(s) at or below threshold ${threshold}`);
+
+    await notificationQueue.add("low-stock-alert", { items, threshold });
+  } catch (err) {
+    console.error("Low stock scheduler error:", err);
+  }
+};
+
 cron.schedule(REPORT_SEND_CRON, schedulePendingReportNotifications, {
   scheduled: true,
   timezone: process.env.CRON_TIMEZONE || "UTC",
@@ -144,6 +300,16 @@ cron.schedule(
 );
 
 cron.schedule(REMOVE_PENDING_RECORDS_CRON, removePendingOrdersAndTransactions, {
+  scheduled: true,
+  timezone: process.env.CRON_TIMEZONE || "UTC",
+});
+
+cron.schedule(ABANDONED_CART_CRON, scheduleAbandonedCartReminders, {
+  scheduled: true,
+  timezone: process.env.CRON_TIMEZONE || "UTC",
+});
+
+cron.schedule(LOW_STOCK_CHECK_CRON, scheduleLowStockAlerts, {
   scheduled: true,
   timezone: process.env.CRON_TIMEZONE || "UTC",
 });
@@ -185,6 +351,26 @@ const notificationsWorker = new Worker(
           await handleBookingUpgraded(job.data);
           break;
 
+        case "shipment-update":
+          await handleShipmentUpdate(job.data);
+          break;
+
+        case "return-status-update":
+          await handleReturnStatusUpdate(job.data);
+          break;
+
+        case "abandoned-cart-reminder":
+          await handleAbandonedCartReminder(job.data);
+          break;
+
+        case "booking-products-recommended":
+          await handleBookingProductsRecommended(job.data);
+          break;
+
+        case "low-stock-alert":
+          await handleLowStockAlert(job.data);
+          break;
+
         default:
           throw new ApiError(400, `Unknown notification type: ${job.name}`);
       }
@@ -220,8 +406,11 @@ const handleOrderConfirmed = async (data) => {
     userName,
     userPhone,
     subTotal,
+    discount,
+    couponCode,
     totalAmount,
     shipping,
+    tax,
     products = [],
     address,
     orderType,
@@ -232,10 +421,24 @@ const handleOrderConfirmed = async (data) => {
 
   console.error("ORDER TYPE: ", orderType);
 
-  const downloadLink =
-    orderType === "digital"
-      ? `${process.env.FRONTEND_URL}/dashboard?tab=downloads`
-      : null;
+  // Customer-facing order number must match the short form shown
+  // everywhere else (emails, admin panel, invoice/credit-note PDFs) — the
+  // email templates truncate internally, but WhatsApp/SMS take a plain
+  // string so it's done once here.
+  const shortOrderId = String(orderId || "")
+    .slice(-8)
+    .toUpperCase();
+
+  // orderType is "physical" whenever ANY item is physical, even one bought
+  // alongside a digital item (order.model.js) — so it alone can't tell a
+  // mixed order apart from a pure-physical one, and a mixed order's digital
+  // item(s) would silently never get a download link. Each item's own
+  // `type` (order.model.js's orderItemSchema, passed through in every
+  // enqueue site's `products` mapping) is the reliable per-item signal.
+  const hasDigitalItems = products.some((p) => p.type === "digital");
+  const downloadLink = hasDigitalItems
+    ? `${process.env.FRONTEND_URL}/dashboard?tab=downloads`
+    : null;
 
   if (userEmail) {
     try {
@@ -245,8 +448,11 @@ const handleOrderConfirmed = async (data) => {
         orderId,
         products,
         subTotal,
+        discount,
+        couponCode,
         totalAmount,
         shipping,
+        tax,
         address,
         orderType,
         currency,
@@ -267,7 +473,12 @@ const handleOrderConfirmed = async (data) => {
         userPhone,
         orderId,
         products,
+        subTotal,
+        discount,
+        couponCode,
         totalAmount,
+        shipping,
+        tax,
         currency,
       });
       await sendEmail({ to: ADMIN_EMAIL, subject, html });
@@ -284,7 +495,7 @@ const handleOrderConfirmed = async (data) => {
       await sendOrderWhatsapp({
         name: userName,
         phone: userPhone,
-        orderId,
+        orderId: shortOrderId,
         productName: productNames,
         status: orderStatus,
         downloadLink,
@@ -301,13 +512,327 @@ const handleOrderConfirmed = async (data) => {
         mobileNumber: userPhone,
         message: smsTemplates.ORDER_UPDATE({
           userName: userName || "Customer",
-          orderId,
+          orderId: shortOrderId,
           productName: productNames,
           orderStatus,
         }),
       });
     } catch (err) {
       console.error({ orderId, err }, "order-confirmed: sms failed");
+    }
+  }
+};
+
+const handleShipmentUpdate = async (data) => {
+  const {
+    orderId,
+    shipmentId,
+    fulfillmentType,
+    status,
+    statusCode,
+    courier,
+    awb,
+    trackingUrl,
+    userEmail,
+    userName,
+    items,
+    currency,
+  } = data;
+
+  console.log("SHIPMENT UPDATE", { orderId, shipmentId, status, statusCode });
+
+  if (userEmail) {
+    try {
+      const { subject, html } = emailTemplates.SHIPMENT_UPDATE_USER({
+        userName,
+        orderId,
+        fulfillmentType,
+        status,
+        courier,
+        awb,
+        trackingUrl,
+        items,
+        currency,
+      });
+      await sendEmail({ to: userEmail, subject, html });
+    } catch (err) {
+      console.error(
+        { orderId, shipmentId, err },
+        "shipment-update: user email failed",
+      );
+    }
+  }
+
+  if (ADMIN_EMAIL) {
+    try {
+      const { subject, html } = emailTemplates.SHIPMENT_UPDATE_ADMIN({
+        userName,
+        userEmail,
+        orderId,
+        shipmentId,
+        fulfillmentType,
+        status,
+        statusCode,
+        courier,
+        awb,
+        trackingUrl,
+        items,
+        currency,
+      });
+      await sendEmail({ to: ADMIN_EMAIL, subject, html });
+    } catch (err) {
+      console.error(
+        { orderId, shipmentId, err },
+        "shipment-update: admin email failed",
+      );
+    }
+  }
+
+  // WhatsApp/SMS for shipment updates need a dedicated approved template
+  // (a WHATCHIMP_*_TEMPLATE_ID / DLT SMS template, same as
+  // WHATCHIMP_ORDER_TEMPLATE_ID etc. in .env) before they can send — not
+  // configured yet, so intentionally left email-only for now. Add a
+  // template ID and wire in sendOrderWhatsapp/sendSmsLane the same way
+  // handleOrderConfirmed does once one exists.
+};
+
+const handleReturnStatusUpdate = async (data) => {
+  const {
+    orderId,
+    returnId,
+    status,
+    fulfillmentType,
+    awb,
+    courier,
+    trackingUrl,
+    refundAmount,
+    refundIncludesShipping,
+    razorpayRefundId,
+    refundMethod,
+    shippingAmount,
+    currency,
+    reason,
+    adminNote,
+    error,
+    items,
+    userEmail,
+    userName,
+    userPhone,
+  } = data;
+
+  console.log("RETURN STATUS UPDATE", { orderId, returnId, status });
+
+  if (userEmail) {
+    try {
+      const { subject, html } = emailTemplates.RETURN_STATUS_UPDATE_USER({
+        userName,
+        orderId,
+        returnId,
+        status,
+        fulfillmentType,
+        courier,
+        awb,
+        trackingUrl,
+        refundAmount,
+        refundIncludesShipping,
+        refundMethod,
+        shippingAmount,
+        currency,
+        reason,
+        adminNote,
+        items,
+      });
+      await sendEmail({ to: userEmail, subject, html });
+    } catch (err) {
+      console.error(
+        { orderId, returnId, err },
+        "return-status-update: user email failed",
+      );
+    }
+  }
+
+  if (ADMIN_EMAIL) {
+    try {
+      const { subject, html } = emailTemplates.RETURN_STATUS_UPDATE_ADMIN({
+        userName,
+        userEmail,
+        orderId,
+        returnId,
+        status,
+        fulfillmentType,
+        courier,
+        awb,
+        trackingUrl,
+        refundAmount,
+        refundIncludesShipping,
+        razorpayRefundId,
+        refundMethod,
+        shippingAmount,
+        currency,
+        reason,
+        adminNote,
+        error,
+        items,
+      });
+      await sendEmail({ to: ADMIN_EMAIL, subject, html });
+    } catch (err) {
+      console.error(
+        { orderId, returnId, err },
+        "return-status-update: admin email failed",
+      );
+    }
+  }
+
+  if (userPhone) {
+    try {
+      const linkFallback = `${process.env.FRONTEND_URL}/dashboard?tab=orders`;
+
+      if (status === "refunded") {
+        await sendRefundProcessedWhatsapp({
+          phone: userPhone,
+          userName,
+          orderId,
+          refundAmount,
+          refundMethod,
+          link: linkFallback,
+        });
+      } else {
+        const meta = RETURN_STATUS_META[status] || DEFAULT_RETURN_STATUS_META;
+        const message =
+          status === "rejected" && adminNote ? adminNote : meta.message;
+
+        await sendReturnStatusWhatsapp({
+          phone: userPhone,
+          userName,
+          orderId,
+          heading: meta.heading,
+          message,
+          link: trackingUrl || linkFallback,
+        });
+      }
+    } catch (err) {
+      console.error(
+        { orderId, returnId, err },
+        "return-status-update: whatsapp failed",
+      );
+    }
+  }
+
+  // shipment-update (courier tracking scans, as opposed to this return
+  // lifecycle) stays email-only — Shiprocket already sends its own
+  // WhatsApp/SMS tracking updates to the customer directly.
+};
+
+
+const handleAbandonedCartReminder = async (data) => {
+  const { cartId, userEmail, userName, userPhone, items = [], cartTotal } = data;
+
+  if (!userEmail && !userPhone) return;
+
+  if (userEmail) {
+    try {
+      const { subject, html } = emailTemplates.ABANDONED_CART_USER({
+        name: userName,
+        items,
+        cartTotal,
+      });
+      await sendEmail({ to: userEmail, subject, html });
+      console.log(`[abandoned-cart] reminder sent to ${userEmail} for cart ${cartId}`);
+    } catch (err) {
+      console.error({ cartId, err }, "abandoned-cart-reminder: email failed");
+    }
+  }
+
+  if (userPhone) {
+    try {
+      await sendAbandonedCartWhatsapp({
+        phone: userPhone,
+        userName,
+        cartTotal,
+        link: `${process.env.FRONTEND_URL}/cart`,
+      });
+    } catch (err) {
+      console.error({ cartId, err }, "abandoned-cart-reminder: whatsapp failed");
+    }
+  }
+
+  await Cart.updateOne(
+    { _id: cartId },
+    { $set: { abandonedCartReminderSentAt: new Date() } },
+  );
+};
+
+const handleLowStockAlert = async (data) => {
+  const { items = [], threshold } = data;
+
+  if (!ADMIN_EMAIL || !items.length) return;
+
+  try {
+    const { subject, html } = emailTemplates.LOW_STOCK_ADMIN({ items, threshold });
+    await sendEmail({ to: ADMIN_EMAIL, subject, html });
+    console.log(`[low-stock] alert emailed to admin for ${items.length} item(s)`);
+  } catch (err) {
+    console.error({ err }, "low-stock-alert: admin email failed");
+    return; // leave lowStockNotifiedAt unset so the next tick retries
+  }
+
+  for (const item of items) {
+    if (item.subVariantId) {
+      await Product.updateOne(
+        { _id: item.productId },
+        { $set: { "variants.$[v].subVariants.$[sv].lowStockNotifiedAt": new Date() } },
+        { arrayFilters: [{ "v._id": item.variantId }, { "sv._id": item.subVariantId }] },
+      );
+    } else if (item.variantId) {
+      await Product.updateOne(
+        { _id: item.productId, "variants._id": item.variantId },
+        { $set: { "variants.$.lowStockNotifiedAt": new Date() } },
+      );
+    } else {
+      await Product.updateOne(
+        { _id: item.productId },
+        { $set: { lowStockNotifiedAt: new Date() } },
+      );
+    }
+  }
+};
+
+const handleBookingProductsRecommended = async (data) => {
+  const {
+    bookingId,
+    userEmail,
+    userName,
+    userPhone,
+    consultationTitle,
+    items = [],
+  } = data;
+
+  if (!userEmail && !userPhone) return;
+
+  if (userEmail) {
+    try {
+      const { subject, html } = emailTemplates.RECOMMENDED_PRODUCTS_USER({
+        name: userName,
+        consultationTitle,
+        items,
+      });
+      await sendEmail({ to: userEmail, subject, html });
+    } catch (err) {
+      console.error({ bookingId, err }, "booking-products-recommended: email failed");
+    }
+  }
+
+  if (userPhone) {
+    try {
+      await sendRecommendedProductsWhatsapp({
+        phone: userPhone,
+        userName,
+        consultationTitle,
+        productNames: items.map((item) => item.name).filter(Boolean),
+        link: `${process.env.FRONTEND_URL}/dashboard?tab=recommendations`,
+      });
+    } catch (err) {
+      console.error({ bookingId, err }, "booking-products-recommended: whatsapp failed");
     }
   }
 };
@@ -442,12 +967,24 @@ const handleConsultationReminder = async (data) => {
     throw new ApiError(400, "Invalid reminder payload");
   }
 
-  const booking = await Booking.findById(bookingId);
+  // Atomic claim BEFORE sending anything — nothing upstream dedupes at
+  // enqueue time (schedulePendingConsultationReminders re-matches and
+  // re-enqueues any booking with reminderSent still false on every cron
+  // tick *and* once immediately on every server boot), so two overlapping
+  // runs — a restart landing near the daily cron tick, a BullMQ redelivery,
+  // whatever — could otherwise both reach this point for the same booking
+  // and both actually send the WhatsApp/email. Claiming first means only
+  // the run that wins the race ever sends; a booking that's already
+  // claimed (or was force-set by a previous partial success) is skipped
+  // outright instead of resending.
+  const booking = await Booking.findOneAndUpdate(
+    { _id: bookingId, reminderSent: { $ne: true } },
+    { $set: { reminderSent: true, reminderSentAt: new Date() } },
+    { new: false },
+  );
   if (!booking) {
     return;
   }
-
-  let reminderSent = false;
 
   if (userEmail) {
     try {
@@ -463,7 +1000,6 @@ const handleConsultationReminder = async (data) => {
           slot: slot || "-",
         },
       });
-      reminderSent = true;
     } catch (err) {
       console.error("Consultation reminder email failed:", err);
     }
@@ -479,16 +1015,9 @@ const handleConsultationReminder = async (data) => {
         slot: slot || "-",
         mode: mode || "-",
       });
-      reminderSent = true;
     } catch (err) {
       console.error("Consultation reminder WhatsApp failed:", err);
     }
-  }
-
-  if (reminderSent) {
-    booking.reminderSent = true;
-    booking.reminderSentAt = new Date();
-    await booking.save();
   }
 };
 
@@ -782,10 +1311,7 @@ const handleBookingUpgraded = async (data) => {
       });
       await sendEmail({ to: userEmail, subject, html });
     } catch (err) {
-      console.error(
-        { bookingId, err },
-        "booking-upgraded: user email failed",
-      );
+      console.error({ bookingId, err }, "booking-upgraded: user email failed");
     }
   }
 
@@ -816,8 +1342,17 @@ async function removePendingOrdersAndTransactions() {
       orderStatus: "payment_pending",
       createdAt: { $lt: cutoff },
     }),
+    // COD transactions now start "pending" and legitimately stay that way
+    // for the entire shipping duration — finalizeCodPayment (orderSync.js)
+    // only flips them to "success" on actual delivery, which routinely takes
+    // longer than this cutoff. Only a "pending" *non-COD* (i.e. Razorpay)
+    // transaction represents an abandoned checkout attempt that's actually
+    // safe to sweep — deleting a live COD order's transaction record here
+    // would also silently break finalizeCodPayment's lookup later, leaving
+    // the order marked "paid" with no transaction behind it.
     Transaction.deleteMany({
       status: "pending",
+      method: { $ne: "cod" },
       createdAt: { $lt: cutoff },
     }),
     ReportOrder.deleteMany({

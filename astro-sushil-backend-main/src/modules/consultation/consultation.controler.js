@@ -8,6 +8,7 @@ import { Consultation } from "./consultation.modal.js";
 import { consultationZod } from "./consultation.validation.js";
 import { computeGst } from "../../common/taxEngine.js";
 import dayjs from "dayjs";
+import { diffFields, logActivity } from "../AuditLog/auditLog.service.js";
 
 const formatZodError = (err) => {
   return (err?.issues || []).map((e) => ({
@@ -51,6 +52,15 @@ export const createConsultation = asyncHandler(async (req, res) => {
     isActive: true,
   });
 
+  await logActivity({
+    admin: req.user,
+    action: "consultation.create",
+    targetType: "Consultation",
+    targetId: consultation._id,
+    targetLabel: consultation?.title,
+    changes: [],
+  });
+
   return res
     .status(201)
     .json(new ApiResponse(201, consultation, "Consultation created"));
@@ -68,6 +78,8 @@ export const updateConsultation = asyncHandler(async (req, res) => {
   if (!doc) {
     throw new ApiError(404, "Consultation not found");
   }
+
+  const beforeSnapshot = doc.toObject();
 
   const data = parsed.data;
 
@@ -122,6 +134,16 @@ export const updateConsultation = asyncHandler(async (req, res) => {
   });
 
   await doc.save();
+
+  await logActivity({
+    admin: req.user,
+    action: "consultation.update",
+    targetType: "Consultation",
+    targetId: doc._id,
+    targetLabel: doc?.title,
+    changes: diffFields(beforeSnapshot, doc.toObject(), [...fields, "modes"]),
+    skipIfNoChanges: true,
+  });
 
   return res.json(
     new ApiResponse(200, doc, "Consultation updated successfully"),
@@ -207,7 +229,18 @@ export const deleteConsultation = asyncHandler(async (req, res) => {
     throw new ApiError(404, "Consultation not found");
   }
 
+  const title = consultation.title;
+
   await consultation.deleteOne();
+
+  await logActivity({
+    admin: req.user,
+    action: "consultation.delete",
+    targetType: "Consultation",
+    targetId: consultation._id,
+    targetLabel: title,
+    changes: [],
+  });
 
   return res.json(
     new ApiResponse(200, null, "Consultation deleted successfully"),
@@ -259,6 +292,15 @@ export const unblockDate = asyncHandler(async (req, res) => {
   );
 
   await consultation.save();
+
+  await logActivity({
+    admin: req.user,
+    action: "consultation.unblockDate",
+    targetType: "Consultation",
+    targetId: consultation._id,
+    targetLabel: `${consultation?.title} - ${date}`,
+    changes: [],
+  });
 
   return res.json(
     new ApiResponse(200, consultation.unavailableDates, "Date unblocked"),
@@ -393,6 +435,15 @@ export const blockDate = asyncHandler(async (req, res) => {
   }
 
   await consultation.save();
+
+  await logActivity({
+    admin: req.user,
+    action: "consultation.blockDate",
+    targetType: "Consultation",
+    targetId: consultation._id,
+    targetLabel: `${consultation?.title} - ${date}`,
+    changes: [],
+  });
 
   return res.json(new ApiResponse(200, consultation, "Date blocked"));
 });

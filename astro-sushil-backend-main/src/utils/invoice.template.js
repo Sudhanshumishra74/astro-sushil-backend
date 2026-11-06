@@ -70,7 +70,7 @@ const itemTypeBadge = (type = "") => {
 const SUPPLIER_GSTIN = "09ABFCA5917P1Z2";
 const SUPPLIER_STATE = "Uttar Pradesh";
 
-export const generateInvoiceTemplate = (order, persistedInvoiceNumber) => {
+export const generateInvoiceTemplate = (order) => {
   const round2 = (n) => Math.round(n * 100) / 100;
 
   const itemRows = (order.items || []).map((item) => ({
@@ -108,7 +108,6 @@ export const generateInvoiceTemplate = (order, persistedInvoiceNumber) => {
   const addr = order.shippingAddress || {};
   const payment = order.payment || {};
   const invoiceNo =
-    persistedInvoiceNumber ||
     order.invoiceNumber ||
     `INV-${String(order._id || "")
       .slice(-8)
@@ -125,21 +124,28 @@ export const generateInvoiceTemplate = (order, persistedInvoiceNumber) => {
 
       return `
       <tr style="border-bottom:1px solid #f0ece4;${i % 2 === 1 ? "background:#fdfcf9;" : ""}">
-        <td style="padding:14px 16px;color:#6b7280;font-size:13px;text-align:center;vertical-align:top;">
+        <td style="padding:11px 12px;color:#6b7280;font-size:13px;text-align:center;vertical-align:top;">
           ${i + 1}
         </td>
-        <td style="padding:14px 16px;vertical-align:top;">
-          <div style="font-weight:600;font-size:14px;color:#1a1a2e;">${item._doc.name || "—"}</div>
-          ${item._doc.description ? `<div style="font-size:12px;color:#9ca3af;margin-top:2px;">${item._doc.description}</div>` : ""}
+        <td style="padding:11px 12px;vertical-align:top;">
+          <div style="font-weight:600;font-size:13.5px;color:#1a1a2e;line-height:1.4;">${item._doc.name || "—"}</div>
+          ${item._doc.description ? `<div style="font-size:11.5px;color:#9ca3af;margin-top:2px;">${item._doc.description}</div>` : ""}
           ${itemTypeBadge(item._doc.type)}
         </td>
-        <td style="padding:14px 16px;text-align:center;font-size:14px;color:#374151;vertical-align:top;">
+        <td style="padding:11px 12px;text-align:center;font-size:13px;color:#374151;vertical-align:top;">
           ${item._doc.quantity || 1}
         </td>
-        <td style="padding:14px 16px;text-align:right;font-size:14px;color:#374151;vertical-align:top;">
+        <td style="padding:11px 12px;text-align:right;font-size:13px;color:#374151;vertical-align:top;">
           ${fmt(item._doc.price || 0)}
         </td>
-        <td style="padding:14px 16px;text-align:right;font-size:14px;font-weight:700;color:#1a1a2e;vertical-align:top;">
+        <td style="padding:11px 12px;text-align:right;font-size:12px;color:#6b7280;vertical-align:top;">
+          ${
+            item._doc.taxRate
+              ? `${item._doc.taxRate}%${item._doc.taxType === "inclusive" ? " incl." : ""}<br/><span style="color:#9ca3af;">${fmt(item._doc.taxAmount || 0)}</span>`
+              : "—"
+          }
+        </td>
+        <td style="padding:11px 12px;text-align:right;font-size:13px;font-weight:700;color:#1a1a2e;vertical-align:top;">
           ${fmt(item.lineTotal)}
         </td>
       </tr>`;
@@ -290,7 +296,7 @@ export const generateInvoiceTemplate = (order, persistedInvoiceNumber) => {
     /* ── Header ── */
     .inv-header {
       background: linear-gradient(135deg, #1a1a2e 0%, #2c1f4a 55%, #1a1a2e 100%);
-      padding: 40px 44px 36px;
+      padding: 28px 40px 24px;
       position: relative;
       overflow: hidden;
     }
@@ -373,9 +379,9 @@ export const generateInvoiceTemplate = (order, persistedInvoiceNumber) => {
     .status-strip {
       background: #fdfcf9;
       border-bottom: 1px solid #eee8db;
-      padding: 14px 44px;
+      padding: 11px 40px;
       display: flex;
-      gap: 28px;
+      gap: 24px;
       align-items: center;
       flex-wrap: wrap;
     }
@@ -396,14 +402,16 @@ export const generateInvoiceTemplate = (order, persistedInvoiceNumber) => {
     }
 
     /* ── Body ── */
-    .inv-body { padding: 36px 44px 40px; }
+    .inv-body { padding: 24px 40px 28px; }
 
     /* ── Cards row ── */
     .cards-row {
       display: flex;
       gap: 16px;
-      margin-bottom: 28px;
+      margin-bottom: 20px;
       flex-wrap: wrap;
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
 
     /* ── Table ── */
@@ -417,7 +425,7 @@ export const generateInvoiceTemplate = (order, persistedInvoiceNumber) => {
       border: 1px solid #e8e2d5;
       border-radius: 12px;
       overflow: hidden;
-      margin-bottom: 24px;
+      margin-bottom: 18px;
     }
 
     thead tr {
@@ -425,7 +433,7 @@ export const generateInvoiceTemplate = (order, persistedInvoiceNumber) => {
     }
 
     thead th {
-      padding: 13px 16px;
+      padding: 10px 12px;
       font-size: 10.5px;
       font-weight: 600;
       color: #c4a96a;
@@ -435,27 +443,34 @@ export const generateInvoiceTemplate = (order, persistedInvoiceNumber) => {
 
     thead th:first-child { text-align: center; }
     thead th:nth-child(3) { text-align: center; }
-    thead th:nth-child(4), thead th:nth-child(5) { text-align: right; }
+    thead th:nth-child(4), thead th:nth-child(5), thead th:nth-child(6) { text-align: right; }
+
+    tbody tr {
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
 
     /* ── Totals ── */
     .totals-wrap {
       display: flex;
       justify-content: flex-end;
-      margin-bottom: 28px;
+      margin-bottom: 20px;
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
 
     .totals-inner {
-      width: 300px;
+      width: 280px;
       border: 1px solid #e8e2d5;
       border-radius: 12px;
       overflow: hidden;
     }
 
-    .totals-rows { padding: 12px 0 4px; }
+    .totals-rows { padding: 10px 0 2px; }
 
     .grand-row {
       background: linear-gradient(135deg, #1a1a2e, #2c1f4a);
-      padding: 15px 16px;
+      padding: 13px 16px;
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -481,11 +496,13 @@ export const generateInvoiceTemplate = (order, persistedInvoiceNumber) => {
     .inv-footer {
       background: #fdfcf9;
       border-top: 1px solid #eee8db;
-      padding: 18px 44px;
+      padding: 14px 40px;
       font-size: 11.5px;
       color: #a8916a;
       text-align: center;
-      line-height: 1.8;
+      line-height: 1.7;
+      page-break-inside: avoid;
+      break-inside: avoid;
     }
 
     @media print {
@@ -530,7 +547,7 @@ export const generateInvoiceTemplate = (order, persistedInvoiceNumber) => {
       <span class="status-label">Order ID</span>
       <span style="font-family:monospace;font-size:12px;color:#374151;font-weight:600;">
         ${String(order._id || "")
-          .slice(-12)
+          .slice(-8)
           .toUpperCase()}
       </span>
     </div>
@@ -569,11 +586,12 @@ export const generateInvoiceTemplate = (order, persistedInvoiceNumber) => {
       <table>
         <thead>
           <tr>
-            <th style="width:44px;">#</th>
+            <th style="width:34px;">#</th>
             <th style="text-align:left;">Item</th>
-            <th style="width:60px;">Qty</th>
-            <th style="width:110px;">Unit Price</th>
-            <th style="width:120px;">Total</th>
+            <th style="width:48px;">Qty</th>
+            <th style="width:90px;">Unit Price</th>
+            <th style="width:85px;">GST</th>
+            <th style="width:95px;">Total</th>
           </tr>
         </thead>
         <tbody>

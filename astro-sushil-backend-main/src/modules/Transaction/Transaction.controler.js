@@ -1,6 +1,5 @@
 import { Transaction } from "./Transaction.model.js";
 import { User } from "../auth/user.modal.js";
-import { Invoice } from "../Invoice/invoice.model.js";
 import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
@@ -43,6 +42,10 @@ export const getAllTransactions = asyncHandler(async (req, res) => {
   const [transactions, total] = await Promise.all([
     Transaction.find(filter)
       .populate("user", "firstName lastName email phoneNumber")
+      // Only meaningful for transactionType: "refund" — lets the admin see
+      // which original payment a refund was issued against without a
+      // separate lookup.
+      .populate("refundOf", "transactionId amount method createdAt")
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limitNum),
@@ -61,6 +64,18 @@ export const getAllTransactions = asyncHandler(async (req, res) => {
 });
 
 const SUPPLIER_STATE = "Uttar Pradesh";
+
+// Prefers the real persisted invoiceNumber (assigned once, on first
+// invoice view/download — see utils/invoiceSequence.js). Falls back to the
+// old id-slice scheme only for a linked order/booking/report that's never
+// had its invoice opened yet, so this GST report never shows a blank.
+const invoiceNumberFor = (txn) => {
+  const linked = txn.order || txn.booking || txn.report;
+  if (linked?.invoiceNumber) return linked.invoiceNumber;
+
+  const linkedId = linked?._id;
+  return `INV-${String(linkedId || txn._id).slice(-8).toUpperCase()}`;
+};
 
 const customerNameFor = (txn) => {
   if (txn.transactionType === "report" && txn.report) {
@@ -173,97 +188,14 @@ export const getGstReport = asyncHandler(async (req, res) => {
   // Dashboard's (deliberately narrower) live-bookings revenue figure.
   const transactions = await Transaction.find(filter)
     .populate("user", "firstName lastName email phoneNumber")
-    .populate({ path: "order", select: "shippingAddress items orderStatus" })
+    .populate({ path: "order", select: "shippingAddress items orderStatus invoiceNumber" })
     .populate({ path: "booking", select: "" })
     .populate({
       path: "report",
-      select: "customerDetails matchMakingDetails reportType reportStatus",
+      select: "customerDetails matchMakingDetails reportType reportStatus invoiceNumber",
     })
     .sort({ createdAt: 1 })
     .lean();
-
-  const transactionIds = transactions.map((txn) => txn._id);
-  const sourceReferenceFor = (txn) => {
-    if (txn.transactionType === "order") {
-      return {
-        sourceType: "order",
-        sourceId: txn.order?._id || txn.order,
-      };
-    }
-    if (txn.transactionType === "consultation") {
-      return {
-        sourceType: "booking",
-        sourceId: txn.booking?._id || txn.booking,
-      };
-    }
-    if (txn.transactionType === "report") {
-      return {
-        sourceType: "report",
-        sourceId: txn.report?._id || txn.report,
-      };
-    }
-    return null;
-  };
-
-  const sourceReferences = transactions
-    .map(sourceReferenceFor)
-    .filter((reference) => reference?.sourceId != null);
-  const uniqueSourceReferences = [
-    ...new Map(
-      sourceReferences.map((reference) => [
-        `${reference.sourceType}:${String(reference.sourceId)}`,
-        reference,
-      ]),
-    ).values(),
-  ];
-  const invoiceLookup = transactions.length
-    ? [
-        { transaction: { $in: transactionIds } },
-        ...uniqueSourceReferences.map((reference) => ({
-          sourceType: reference.sourceType,
-          sourceId: reference.sourceId,
-        })),
-      ]
-    : [];
-
-  const invoices = invoiceLookup.length
-    ? await Invoice.find({ $or: invoiceLookup })
-        .select("transaction sourceType sourceId invoiceNumber")
-        .lean()
-    : [];
-
-  const invoiceNumberByTransactionId = new Map();
-  const invoiceNumberBySourceReference = new Map();
-  for (const invoice of invoices) {
-    if (invoice.transaction != null) {
-      invoiceNumberByTransactionId.set(
-        String(invoice.transaction),
-        invoice.invoiceNumber,
-      );
-    }
-    if (invoice.sourceType && invoice.sourceId != null) {
-      invoiceNumberBySourceReference.set(
-        `${invoice.sourceType}:${String(invoice.sourceId)}`,
-        invoice.invoiceNumber,
-      );
-    }
-  }
-
-  const invoiceNumberFor = (txn) => {
-    const reference = sourceReferenceFor(txn);
-    const sourceKey =
-      reference?.sourceId != null
-        ? `${reference.sourceType}:${String(reference.sourceId)}`
-        : null;
-
-    return (
-      (sourceKey
-        ? invoiceNumberBySourceReference.get(sourceKey)
-        : undefined) ||
-      invoiceNumberByTransactionId.get(String(txn._id)) ||
-      null
-    );
-  };
 
   const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 

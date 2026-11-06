@@ -12,6 +12,7 @@ import { Transaction } from "../Transaction/Transaction.model.js";
 import ReportOrder from "../Reports/reportOrder.model.js";
 import { User } from "../auth/user.modal.js";
 import { nowIST, IST } from "../../utils/time.js";
+import { diffFields, logActivity } from "../AuditLog/auditLog.service.js";
 
 export const getSettings = asyncHandler(async (req, res) => {
   let settings = await Setting.findOne();
@@ -20,9 +21,17 @@ export const getSettings = asyncHandler(async (req, res) => {
     settings = await Setting.create({});
   }
 
+  // Shiprocket password is write-only — never send the real value back,
+  // just whether one is saved so the admin UI can show that state.
+  const response = settings.toObject();
+  if (response.shiprocket) {
+    response.shiprocket.passwordSet = Boolean(response.shiprocket.password);
+    response.shiprocket.password = "";
+  }
+
   return res
     .status(200)
-    .json(new ApiResponse(200, settings, "Settings fetched successfully"));
+    .json(new ApiResponse(200, response, "Settings fetched successfully"));
 });
 
 export const updateSettings = asyncHandler(async (req, res) => {
@@ -39,19 +48,37 @@ export const updateSettings = asyncHandler(async (req, res) => {
     settings = new Setting({});
   }
 
+  const beforeSnapshot = settings.toObject();
+
   const updateData = parsed.data;
   const merged = merge({}, settings.toObject(), updateData, {
     updatedBy: req.admin?._id,
   });
 
   settings = await Setting.findByIdAndUpdate(settings._id, merged, {
-    new: true,
+    returnDocument: "after",
     runValidators: true,
   });
 
+  await logActivity({
+    admin: req.user,
+    action: "setting.update",
+    targetType: "Setting",
+    targetId: settings._id,
+    targetLabel: "Site Settings",
+    changes: diffFields(beforeSnapshot, settings.toObject(), Object.keys(req.body || {})),
+    skipIfNoChanges: true,
+  });
+
+  const response = settings.toObject();
+  if (response.shiprocket) {
+    response.shiprocket.passwordSet = Boolean(response.shiprocket.password);
+    response.shiprocket.password = "";
+  }
+
   return res
     .status(200)
-    .json(new ApiResponse(200, settings, "Settings updated successfully"));
+    .json(new ApiResponse(200, response, "Settings updated successfully"));
 });
 
 export const getDashboardData = async (req, res) => {

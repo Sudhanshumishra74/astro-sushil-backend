@@ -4,6 +4,7 @@ import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import { User } from "./user.modal.js";
+import { diffFields, logActivity } from "../AuditLog/auditLog.service.js";
 
 const generateUsername = (firstName) => {
   const random = Math.floor(1000 + Math.random() * 9000);
@@ -134,7 +135,7 @@ export const updateProfile = asyncHandler(async (req, res) => {
   }
 
   const user = await User.findByIdAndUpdate(userId, updateData, {
-    new: true,
+    returnDocument: "after",
     runValidators: true,
   }).select("-password");
 
@@ -254,7 +255,7 @@ export const updateProfilePhoto = asyncHandler(async (req, res) => {
   }
 
   const updatedUser = await User.findByIdAndUpdate(userId, updateData, {
-    new: true,
+    returnDocument: "after",
     runValidators: true,
   }).select("-password");
 
@@ -278,6 +279,20 @@ export const getUserById = asyncHandler(async (req, res) => {
   if (!user) throw new ApiError(404, "User not found");
 
   res.json(new ApiResponse(200, user, "User fetched successfully"));
+});
+
+// Deliberately separate from getUserById above — that route is gated by
+// verifyToken (the customer's own ACCESS_TOKEN_SECRET), which an admin's
+// bearer token doesn't satisfy, so an admin session can't call it at all.
+// Backs the admin's customer detail page.
+export const getUserByIdAdmin = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const user = await User.findById(id).select("-password");
+
+  if (!user) throw new ApiError(404, "User not found");
+
+  res.json(new ApiResponse(200, user, "Customer fetched successfully"));
 });
 
 export const getAllUsers = asyncHandler(async (req, res) => {
@@ -320,6 +335,15 @@ export const deleteUser = asyncHandler(async (req, res) => {
   const user = await User.findByIdAndDelete(id);
 
   if (!user) throw new ApiError(404, "User not found");
+
+  await logActivity({
+    admin: req.user,
+    action: "customer.delete",
+    targetType: "Customer",
+    targetId: user._id,
+    targetLabel: `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || user.username,
+    changes: [],
+  });
 
   res.json(new ApiResponse(200, null, "User deleted successfully"));
 });
@@ -388,9 +412,19 @@ export const updateUserByAdmin = asyncHandler(async (req, res) => {
   }
 
   const updated = await User.findByIdAndUpdate(id, updateData, {
-    new: true,
+    returnDocument: "after",
     runValidators: true,
   }).select("-password");
+
+  await logActivity({
+    admin: req.user,
+    action: "customer.update",
+    targetType: "Customer",
+    targetId: updated._id,
+    targetLabel: `${updated.firstName} ${updated.lastName || ""}`.trim(),
+    changes: diffFields(user.toObject(), updated.toObject(), Object.keys(updateData)),
+    skipIfNoChanges: true,
+  });
 
   res.json(new ApiResponse(200, updated, "Customer updated successfully"));
 });

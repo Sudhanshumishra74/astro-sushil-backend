@@ -33,3 +33,14 @@ export const bookingZod = z.object({
     data.discountValue <= 100,
   { message: "Percentage discount cannot exceed 100", path: ["discountValue"] },
 );
+
+export const recommendProductsZod = z.object({
+  items: z
+    .array(
+      z.object({
+        productId: z.string(),
+        note: z.string().trim().max(500).optional().default(""),
+      }),
+    )
+    .min(1),
+});

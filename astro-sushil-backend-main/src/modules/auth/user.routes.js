@@ -7,6 +7,7 @@ import {
   getAllUsers,
   getProfile,
   getUserById,
+  getUserByIdAdmin,
   login,
   register,
   resetPassword,
@@ -66,6 +67,7 @@ router.get("/me", verifyToken, getProfile);
 
 router.get("/:id", verifyToken, getUserById);
 router.get("/", adminVerifyJWT, authorize("customers.view"), getAllUsers);
+router.get("/admin/:id", adminVerifyJWT, authorize("customers.view"), getUserByIdAdmin);
 router.patch("/:id", adminVerifyJWT, authorize("customers.edit"), updateUserByAdmin);
 router.delete("/:id", adminVerifyJWT, authorize("customers.delete"), deleteUser);
 export default router;

@@ -413,3 +413,183 @@ export const sendConsultationRescheduleWhatsapp = async ({
     );
   }
 };
+
+export const sendReturnStatusWhatsapp = async ({
+  phone,
+  userName,
+  orderId,
+  heading,
+  message,
+  link,
+}) => {
+  const normalizedPhone = normalizePhone(phone);
+  if (!normalizedPhone) {
+    console.warn(
+      "sendReturnStatusWhatsapp: skipped — phone number missing or invalid",
+      { phone },
+    );
+    return;
+  }
+
+  try {
+    const url =
+      process.env.WHATCHIMP_API_URL ||
+      "https://app.whatchimp.com/api/v1/whatsapp/send/template";
+
+    const params = {
+      apiToken: process.env.WHATCHIMP_API_TOKEN,
+      phone_number_id: process.env.WHATCHIMP_PHONE_NUMBER_ID,
+      template_id: process.env.WHATCHIMP_RETURN_STATUS_TEMPLATE_ID,
+      phone_number: normalizedPhone,
+      "templateVariable-User-Name-1": userName || "there",
+      "templateVariable-OrderID-2": orderId,
+      "templateVariable-Status-3": heading,
+      "templateVariable-Messages-4": message,
+      "templateVariable-Link-5": link,
+    };
+
+    const response = await axios.get(url, { params });
+
+    console.log("✅ WhatsApp Return Status Sent:", response.data);
+    return response.data;
+  } catch (err) {
+    console.error(
+      "❌ WhatsApp Return Status Error:",
+      err?.response?.data || err.message,
+    );
+  }
+};
+
+export const sendRefundProcessedWhatsapp = async ({
+  phone,
+  userName,
+  orderId,
+  refundAmount,
+  refundMethod,
+  link,
+}) => {
+  const normalizedPhone = normalizePhone(phone);
+  if (!normalizedPhone) {
+    console.warn(
+      "sendRefundProcessedWhatsapp: skipped — phone number missing or invalid",
+      { phone },
+    );
+    return;
+  }
+
+  try {
+    const url =
+      process.env.WHATCHIMP_API_URL ||
+      "https://app.whatchimp.com/api/v1/whatsapp/send/template";
+
+    const params = {
+      apiToken: process.env.WHATCHIMP_API_TOKEN,
+      phone_number_id: process.env.WHATCHIMP_PHONE_NUMBER_ID,
+      template_id: process.env.WHATCHIMP_REFUND_PROCESSED_TEMPLATE_ID,
+      phone_number: normalizedPhone,
+      "templateVariable-User-Name-1": userName || "there",
+      "templateVariable-OrderID-2": orderId,
+      "templateVariable-ordervalue-3": refundAmount ?? 0,
+      "templateVariable-refundMethod-4":
+        refundMethod === "razorpay" ? "Razorpay" : "Bank transfer / cash",
+      "templateVariable-Link-5": link,
+    };
+
+    const response = await axios.get(url, { params });
+
+    console.log("✅ WhatsApp Refund Processed Sent:", response.data);
+    return response.data;
+  } catch (err) {
+    console.error(
+      "❌ WhatsApp Refund Processed Error:",
+      err?.response?.data || err.message,
+    );
+  }
+};
+
+export const sendAbandonedCartWhatsapp = async ({
+  phone,
+  userName,
+  cartTotal,
+  link,
+}) => {
+  const normalizedPhone = normalizePhone(phone);
+  if (!normalizedPhone) {
+    console.warn(
+      "sendAbandonedCartWhatsapp: skipped — phone number missing or invalid",
+      { phone },
+    );
+    return;
+  }
+
+  try {
+    const url =
+      process.env.WHATCHIMP_API_URL ||
+      "https://app.whatchimp.com/api/v1/whatsapp/send/template";
+
+    const params = {
+      apiToken: process.env.WHATCHIMP_API_TOKEN,
+      phone_number_id: process.env.WHATCHIMP_PHONE_NUMBER_ID,
+      template_id: process.env.WHATCHIMP_ABANDONED_CART_TEMPLATE_ID,
+      phone_number: normalizedPhone,
+      "templateVariable-Username-1": userName || "there",
+      "templateVariable-CartTotal-2": cartTotal ?? 0,
+      "templateVariable-Link-3": link,
+    };
+
+    const response = await axios.get(url, { params });
+
+    console.log("✅ WhatsApp Abandoned Cart Sent:", response.data);
+    return response.data;
+  } catch (err) {
+    console.error(
+      "❌ WhatsApp Abandoned Cart Error:",
+      err?.response?.data || err.message,
+    );
+  }
+};
+
+export const sendRecommendedProductsWhatsapp = async ({
+  phone,
+  userName,
+  consultationTitle,
+  productNames = [],
+  link,
+}) => {
+  const normalizedPhone = normalizePhone(phone);
+  if (!normalizedPhone) {
+    console.warn(
+      "sendRecommendedProductsWhatsapp: skipped — phone number missing or invalid",
+      { phone },
+    );
+    return;
+  }
+
+  try {
+    const url =
+      process.env.WHATCHIMP_API_URL ||
+      "https://app.whatchimp.com/api/v1/whatsapp/send/template";
+
+    const params = {
+      apiToken: process.env.WHATCHIMP_API_TOKEN,
+      phone_number_id: process.env.WHATCHIMP_PHONE_NUMBER_ID,
+      template_id: process.env.WHATCHIMP_PRODUCTS_RECOMMENDED_TEMPLATE_ID,
+      phone_number: normalizedPhone,
+      "templateVariable-Username-1": userName || "there",
+      "templateVariable-Consultation-2": consultationTitle || "Consultation",
+      "templateVariable-Products-3":
+        productNames.length > 0 ? productNames.join(", ") : "-",
+      "templateVariable-Link-4": link,
+    };
+
+    const response = await axios.get(url, { params });
+
+    console.log("✅ WhatsApp Recommended Products Sent:", response.data);
+    return response.data;
+  } catch (err) {
+    console.error(
+      "❌ WhatsApp Recommended Products Error:",
+      err?.response?.data || err.message,
+    );
+  }
+};

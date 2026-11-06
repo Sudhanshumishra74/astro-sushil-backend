@@ -174,6 +174,10 @@ const reportOrderSchema = new mongoose.Schema(
       default: "pending",
     },
 
+    // Assigned once, the first time this order's invoice is actually
+    // viewed/downloaded (see utils/invoiceSequence.js).
+    invoiceNumber: { type: String, default: null },
+
     reportStatus: {
       type: String,
       enum: ["pending", "processing", "completed"],

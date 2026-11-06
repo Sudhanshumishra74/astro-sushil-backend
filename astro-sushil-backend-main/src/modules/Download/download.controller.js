@@ -47,7 +47,7 @@ export const createDownloadsFromOrder = async (orderId) => {
         file: variant.downloadableFile,
         thumbnail: product.thumbnail || product.images?.[0] || null,
       },
-      { upsert: true, new: true },
+      { upsert: true, returnDocument: "after" },
     );
   }
 };

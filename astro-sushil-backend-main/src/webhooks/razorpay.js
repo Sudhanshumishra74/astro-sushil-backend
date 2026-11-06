@@ -5,36 +5,81 @@ import { Order } from "../modules/Order/order.model.js";
 import { Booking } from "../modules/booking/booking.model.js";
 import ReportOrder from "../modules/Reports/reportOrder.model.js";
 import { Transaction } from "../modules/Transaction/Transaction.model.js";
-import { Coupon } from "../modules/coupon/coupon.model.js";
+import { claimCouponUsage } from "../common/priceengine.js";
 import { User } from "../modules/auth/user.modal.js";
 import { Consultation } from "../modules/consultation/consultation.modal.js";
 import Cart from "../modules/cart/cart.modal.js";
 
 import { notificationQueue } from "../queues/notification.queue.js";
-import { reduceStock } from "../modules/Order/order.controller.js";
+import { reduceStock, handlePostPaymentStockFailure } from "../modules/Order/order.controller.js";
 import { createDownloadsFromOrder } from "../modules/Download/download.controller.js";
+import { processFulfillment } from "../modules/Fulfillment/fulfillment.service.js";
 import { generateReportAfterPayment } from "../modules/Reports/report.controller.js";
-import { claimOrderPaymentWithInvoice } from "../service/orderPaymentService.js";
-import { allocateInvoiceInTransaction } from "../service/invoiceAllocator.js";
 
 // ─── Order helpers ────────────────────────────────────────────────────────────
+
+async function claimOrderPayment({
+  transactionId,
+  orderId,
+  razorpayPaymentId,
+  razorpayOrderId,
+  session,
+}) {
+  const order = await Order.findOneAndUpdate(
+    { _id: orderId, "payment.status": { $ne: "paid" } },
+    {
+      $set: {
+        "payment.status": "paid",
+        "payment.transactionId": razorpayPaymentId,
+        "payment.razorpayOrderId": razorpayOrderId,
+        orderStatus: "placed",
+      },
+    },
+    { returnDocument: "after", session },
+  );
+
+  if (!order) return null; // Already claimed by client verify
+
+  await Transaction.findByIdAndUpdate(
+    transactionId,
+    { $set: { status: "success", transactionId: razorpayPaymentId } },
+    { session },
+  );
+
+  return order;
+}
 
 async function afterOrderClaim(order) {
   try {
     await reduceStock(order);
   } catch (err) {
-    console.error({ orderId: order._id, err }, "Webhook: stock reduction failed");
+    console.error(
+      { orderId: order._id, err },
+      "Webhook: stock reduction failed after payment capture — cancelling and refunding order",
+    );
+    try {
+      await handlePostPaymentStockFailure(order);
+    } catch (cancelErr) {
+      console.error(
+        { orderId: order._id, err: cancelErr },
+        "Webhook: failed to auto-cancel/refund after stock claim failure — needs manual follow-up",
+      );
+    }
+    // Order is being cancelled/refunded above — no point claiming a coupon
+    // use, unlocking downloads, or creating shipments for it, and
+    // handlePostPaymentStockFailure already sent its own notification.
+    return;
   }
 
   if (order.coupon?.code) {
     try {
-      await Coupon.findOneAndUpdate(
-        { code: order.coupon.code },
-        {
-          $inc: { usedCount: 1 },
-          $push: { usedBy: { user: order.user, usedAt: new Date() } },
-        },
-      );
+      const claimed = await claimCouponUsage(order.coupon.code, order.user, null, order._id);
+      if (!claimed) {
+        console.warn(
+          { orderId: order._id, code: order.coupon.code },
+          "Webhook: coupon usage limit reached before this order could claim it — order still proceeds",
+        );
+      }
     } catch (err) {
       console.error({ orderId: order._id, err }, "Webhook: coupon update failed");
     }
@@ -74,6 +119,12 @@ async function afterOrderClaim(order) {
   }
 
   try {
+    await processFulfillment(order._id);
+  } catch (err) {
+    console.error({ orderId: order._id, err }, "Webhook: fulfillment processing failed");
+  }
+
+  try {
     const user = await User.findById(order.user)
       .select("firstName email phoneNumber")
       .lean();
@@ -84,14 +135,18 @@ async function afterOrderClaim(order) {
       userName: user?.firstName,
       userPhone: user?.phoneNumber,
       subTotal: order.subTotal,
+      discount: order.discount,
+      couponCode: order.coupon?.code,
       totalAmount: order.totalAmount,
       shipping: order.shipping,
+      tax: order.tax,
       currency: order.payment?.currency || "INR",
       orderType: order.orderType,
       products: order.items.map((item) => ({
         name: item.name,
         quantity: item.quantity,
         price: item.price,
+        type: item.type,
       })),
     });
   } catch (err) {
@@ -110,24 +165,16 @@ async function claimBookingPayment({
   const booking = await Booking.findOneAndUpdate(
     { _id: bookingId, paymentStatus: { $ne: "paid" } },
     { $set: { paymentStatus: "paid", status: "booked" } },
-    { new: true, session },
+    { returnDocument: "after", session },
   );
 
   if (!booking) return null; // Already claimed by client verify
 
-  const transaction = await Transaction.findByIdAndUpdate(
+  await Transaction.findByIdAndUpdate(
     transactionId,
     { $set: { status: "success", transactionId: razorpayPaymentId } },
-    { new: true, session },
+    { session },
   );
-  if (!transaction) throw new Error("Transaction not found");
-
-  await allocateInvoiceInTransaction({
-    sourceType: "booking",
-    sourceId: booking._id,
-    transactionId: transaction._id,
-    session,
-  });
 
   return booking;
 }
@@ -173,24 +220,16 @@ async function claimReportPayment({
   const order = await ReportOrder.findOneAndUpdate(
     { _id: reportOrderId, paymentStatus: { $ne: "paid" } },
     { $set: { paymentStatus: "paid", razorpayPaymentId } },
-    { new: true, session },
+    { returnDocument: "after", session },
   );
 
   if (!order) return null; // Already claimed by client verify
 
-  const transaction = await Transaction.findByIdAndUpdate(
+  await Transaction.findByIdAndUpdate(
     transactionId,
     { $set: { status: "success", transactionId: razorpayPaymentId } },
-    { new: true, session },
+    { session },
   );
-  if (!transaction) throw new Error("Transaction not found");
-
-  await allocateInvoiceInTransaction({
-    sourceType: "report",
-    sourceId: order._id,
-    transactionId: transaction._id,
-    session,
-  });
 
   return order;
 }
@@ -291,17 +330,10 @@ export async function razorpayWebhook(req, res) {
 
   const session = await mongoose.startSession();
   session.startTransaction();
-  let sessionEnded = false;
-  const endSessionOnce = async () => {
-    if (!sessionEnded) {
-      sessionEnded = true;
-      await session.endSession();
-    }
-  };
 
   try {
     if (transaction.transactionType === "order") {
-      const claimResult = await claimOrderPaymentWithInvoice({
+      const claimed = await claimOrderPayment({
         transactionId: transaction._id,
         orderId: transaction.order,
         razorpayPaymentId,
@@ -310,17 +342,15 @@ export async function razorpayWebhook(req, res) {
       });
 
       await session.commitTransaction();
-      await endSessionOnce();
+      session.endSession();
 
-      if (!claimResult.claimed) {
+      if (!claimed) {
         console.info(
           { razorpayOrderId },
           "Webhook: order already claimed by client",
         );
         return res.status(200).json({ received: true });
       }
-
-      const claimed = claimResult.order;
 
       console.info(
         { orderId: claimed._id, razorpayPaymentId },
@@ -346,7 +376,7 @@ export async function razorpayWebhook(req, res) {
       });
 
       await session.commitTransaction();
-      await endSessionOnce();
+      session.endSession();
 
       if (!claimed) {
         console.info(
@@ -380,7 +410,7 @@ export async function razorpayWebhook(req, res) {
       });
 
       await session.commitTransaction();
-      await endSessionOnce();
+      session.endSession();
 
       if (!claimed) {
         console.info(
@@ -414,23 +444,8 @@ export async function razorpayWebhook(req, res) {
     );
     return res.status(200).json({ received: true });
   } catch (err) {
-    try {
-      await session.abortTransaction();
-    } catch (abortError) {
-      console.error(
-        { razorpayOrderId, err: abortError },
-        "Webhook: transaction abort failed",
-      );
-    } finally {
-      try {
-        await endSessionOnce();
-      } catch (endError) {
-        console.error(
-          { razorpayOrderId, err: endError },
-          "Webhook: session cleanup failed",
-        );
-      }
-    }
+    await session.abortTransaction();
+    session.endSession();
 
     console.error(
       { err, razorpayOrderId },

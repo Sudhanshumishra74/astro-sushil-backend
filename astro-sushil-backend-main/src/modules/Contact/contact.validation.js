@@ -31,7 +31,3 @@ export const contactSchemaZod = z.object({
     .min(5, "Message must be at least 5 characters")
     .max(2000),
 });
-
-export const contactRemarksSchemaZod = z.object({
-  remarks: z.string().max(2000, "Remarks must be under 2000 characters").optional().default(""),
-});

@@ -14,8 +14,10 @@ const ALLOWED_TYPES = [
   "image/jpeg",
   "image/jpg",
   "image/webp",
+  "image/avif",
   "image/gif",
   "video/mp4",
+  "video/webm",
 
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

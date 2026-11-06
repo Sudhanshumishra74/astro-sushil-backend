@@ -3,6 +3,7 @@ import { ApiError } from "../../utils/ApiError.js";
 import { ApiResponse } from "../../utils/ApiResponse.js";
 import { asyncHandler } from "../../utils/asyncHandler.js";
 import Seo from "./seo.modal.js";
+import { diffFields, logActivity } from "../AuditLog/auditLog.service.js";
 
 const seoCache = new Map();
 
@@ -25,6 +26,15 @@ export const createNewPageSeo = asyncHandler(async (req, res) => {
   const seo = await Seo.create(body);
 
   seoCache.delete(body.name);
+
+  await logActivity({
+    admin: req.user,
+    action: "seo.create",
+    targetType: "Seo",
+    targetId: seo._id,
+    targetLabel: seo?.name,
+    changes: [],
+  });
 
   return res
     .status(201)
@@ -58,7 +68,7 @@ export const updatePageSeo = asyncHandler(async (req, res) => {
   }
 
   const updated = await Seo.findByIdAndUpdate(id, body, {
-    new: true,
+    returnDocument: "after",
     lean: true,
   });
 
@@ -67,6 +77,16 @@ export const updatePageSeo = asyncHandler(async (req, res) => {
   if (updated?.name) {
     seoCache.delete(updated.name);
   }
+
+  await logActivity({
+    admin: req.user,
+    action: "seo.update",
+    targetType: "Seo",
+    targetId: updated?._id || id,
+    targetLabel: updated?.name ?? seo?.name,
+    changes: diffFields(seo, updated, Object.keys(body)),
+    skipIfNoChanges: true,
+  });
 
   return res
     .status(200)
@@ -137,7 +157,18 @@ export const deletePageSeo = asyncHandler(async (req, res) => {
     await deleteFile(seo.image.publicId);
   }
 
+  const seoLabel = seo?.name;
+
   await Seo.findByIdAndDelete(id);
+
+  await logActivity({
+    admin: req.user,
+    action: "seo.delete",
+    targetType: "Seo",
+    targetId: id,
+    targetLabel: seoLabel,
+    changes: [],
+  });
 
   return res
     .status(200)

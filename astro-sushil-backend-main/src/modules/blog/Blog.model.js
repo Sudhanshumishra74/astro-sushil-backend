@@ -99,7 +99,7 @@ async function generateUniqueSlug(model, title, currentId = null) {
 
 
 // ✅ PRE SAVE (CREATE + UPDATE)
-blogSchema.pre("save", async function (next) {
+blogSchema.pre("save", async function () {
   // slug generate only if title changed OR slug missing
   if (!this.isModified("title") && this.slug) return;
 
